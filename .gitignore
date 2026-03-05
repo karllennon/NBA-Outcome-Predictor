@@ -1,6 +1,4 @@
 # Data files (too large for GitHub)
-data/raw_nba_data.csv
-data/raw_player_boxscores.csv
 data/processed_data_with_elo.csv
 data/final_training_set.csv
 

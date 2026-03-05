@@ -1,0 +1,33 @@
+name: Daily Data Refresh
+
+on:
+  schedule:
+    - cron: '0 11 * * *'  # 6am EST every day
+  workflow_dispatch:  # Allows manual trigger from GitHub UI
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install nba_api pandas
+
+      - name: Run ingestion
+        run: python src/ingest.py
+
+      - name: Commit fresh data
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+          git add data/raw_nba_data.csv data/raw_player_boxscores.csv
+          git diff --staged --quiet || git commit -m "Auto refresh data $(date +'%Y-%m-%d')"
+          git push
