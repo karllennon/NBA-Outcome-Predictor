@@ -7,7 +7,9 @@ from datetime import datetime
 
 sys.path.append(os.path.dirname(__file__))
 
-from features import NBAFeatureProcessor
+from inference import GamePredictor
+from matchups import FEATURES
+from train import feature_weights
 from nba_api.stats.static import teams as nba_teams_static
 from sklearn.metrics import roc_auc_score, confusion_matrix
 import matplotlib.pyplot as plt
@@ -27,48 +29,23 @@ TEAM_NAME_MAP = {
     'Los Angeles Clippers': 'LA Clippers'
 }
 
-@st.cache_data
-def load_data():
-    df = pd.read_csv('data/processed_data_with_elo.csv')
-    player_data = pd.read_csv('data/raw_player_boxscores.csv')
-    player_data['GAME_DATE'] = pd.to_datetime(player_data['GAME_DATE'])
-    player_data.columns = player_data.columns.str.strip()
-    return df, player_data
+@st.cache_resource
+def load_predictor():
+    return GamePredictor()
 
 @st.cache_data
-def load_training_set():
-    df = pd.read_csv('data/final_training_set.csv')
-    return df.loc[:, ~df.columns.str.contains('^Unnamed')]
+def load_test_predictions():
+    return pd.read_csv('data/test_predictions.csv', parse_dates=['GAME_DATE'])
 
 @st.cache_resource
 def load_model():
     return joblib.load('models/nba_model.joblib')
 
-@st.cache_data
-def load_positions():
-    return pd.read_csv('data/player_positions.csv')
-
-@st.cache_data
 def get_all_teams():
-    all_teams = nba_teams_static.get_teams()
-    names = [t['full_name'] for t in all_teams]
-    names = [TEAM_NAME_MAP.get(n, n) for n in names]
-    return sorted(names)
+    return load_predictor().teams()
 
-@st.cache_data
-def get_all_rotations():
-    df, player_data = load_data()
-    processor = NBAFeatureProcessor(df)
-    rotation_df = processor.identify_core_four(player_data).reset_index()
-    if 'TEAM_NAME' not in rotation_df.columns:
-        teams_df = pd.DataFrame(nba_teams_static.get_teams())[['id', 'full_name']]
-        teams_df.columns = ['TEAM_ID', 'TEAM_NAME']
-        rotation_df = rotation_df.merge(teams_df, on='TEAM_ID', how='left')
-    # Apply name map
-    rotation_df['TEAM_NAME'] = rotation_df['TEAM_NAME'].replace(TEAM_NAME_MAP)
-    return rotation_df.groupby('TEAM_NAME').apply(
-        lambda x: x[['PLAYER_NAME', 'impact_score']].to_dict('records')
-    ).to_dict()
+def get_rotation(team_name):
+    return load_predictor().rotation(team_name).to_dict('records')
 
 def get_todays_games():
     try:
@@ -83,8 +60,8 @@ def get_todays_games():
         team_map = all_teams.set_index('id')['full_name'].to_dict()
         matchups = []
         for _, game in games.iterrows():
-            home = team_map.get(game['HOME_TEAM_ID'])
-            away = team_map.get(game['VISITOR_TEAM_ID'])
+            home = TEAM_NAME_MAP.get(team_map.get(game['HOME_TEAM_ID']), team_map.get(game['HOME_TEAM_ID']))
+            away = TEAM_NAME_MAP.get(team_map.get(game['VISITOR_TEAM_ID']), team_map.get(game['VISITOR_TEAM_ID']))
             if home and away:
                 matchups.append((home, away))
         return matchups if matchups else None
@@ -92,74 +69,18 @@ def get_todays_games():
         return None
 
 def run_prediction(home_team, away_team, home_injuries, away_injuries, home_acute, away_acute):
-    # Apply name map so stats lookup works
-    home_team_data = TEAM_NAME_MAP.get(home_team, home_team)
-    away_team_data = TEAM_NAME_MAP.get(away_team, away_team)
+    result = load_predictor().predict(home_team, away_team, home_injuries, away_injuries,
+                                      home_acute, away_acute)
 
-    df, player_data = load_data()
-    model = load_model()
-    positions_df = load_positions()
-    processor = NBAFeatureProcessor(df)
+    def describe(details):
+        out = []
+        for player, status, impact, boost in details:
+            icon = "⚡" if status == 'acute' else "🔴"
+            out.append(f"{icon} **{player}**: {status.upper()} (-{impact:.1f}, +{boost:.1f} boost)")
+        return out
 
-    rotation_dict = get_all_rotations()
-    max_boost_tracker = {}
-
-    def calc_impact_loss(team_name, injured_players, acute_overrides):
-        total_lost = 0
-        total_boost = 0
-        details = []
-
-        for pname in injured_players:
-            if pname in acute_overrides:
-                injury_type = 'acute'
-            else:
-                injury_type = processor.classify_injury(pname, player_data)
-
-            team_rot = rotation_dict.get(team_name, [])
-            player_row = next((p for p in team_rot if p['PLAYER_NAME'] == pname), None)
-            if player_row is None:
-                continue
-
-            impact = player_row['impact_score']
-            total_lost += impact
-
-            if injury_type == 'acute':
-                boost, _ = processor.calculate_replacement_boost(
-                    pname, team_name, player_data, positions_df, max_boost_tracker
-                )
-                total_boost += boost
-                details.append(f"⚡ **{pname}** — ACUTE (-{impact:.1f}, +{boost:.1f} boost)")
-            else:
-                details.append(f"🔴 **{pname}** — CHRONIC (-{impact:.1f}, rotation adjusted)")
-
-        return total_lost - total_boost, details
-
-    home_loss, home_details = calc_impact_loss(home_team, home_injuries, home_acute)
-    away_loss, away_details = calc_impact_loss(away_team, away_injuries, away_acute)
-    injury_diff = (away_loss - home_loss) / 10
-
-    h_data = df[df['TEAM_NAME'] == home_team_data]
-    a_data = df[df['TEAM_NAME'] == away_team_data]
-    home_stats = h_data.iloc[-1]
-    away_stats = a_data.iloc[-1]
-
-    features = pd.DataFrame([{
-        'ELO_DIFF': home_stats['PRE_GAME_ELO'] - away_stats['PRE_GAME_ELO'],
-        'EFG_DIFF': home_stats['ROLLING_eFG_PCT'] - away_stats['ROLLING_eFG_PCT'],
-        'TOV_PCT_DIFF': home_stats['ROLLING_TOV_PCT'] - away_stats['ROLLING_TOV_PCT'],
-        'ORB_PCT_DIFF': home_stats['ROLLING_ORB_PCT'] - away_stats['ROLLING_ORB_PCT'],
-        'FT_RATE_DIFF': home_stats['ROLLING_FT_RATE'] - away_stats['ROLLING_FT_RATE'],
-        'WIN_STREAK_DIFF': home_stats['WIN_STREAK'] - away_stats['WIN_STREAK'],
-        'REST_DIFF': home_stats['DAYS_REST'] - away_stats['DAYS_REST'],
-        'B2B_DIFF': home_stats['IS_B2B'] - away_stats['IS_B2B'],
-        'PLUS_MINUS_DIFF': home_stats['ROLLING_PLUS_MINUS'] - away_stats['ROLLING_PLUS_MINUS'],
-        'PACE_DIFF': home_stats['ROLLING_PACE'] - away_stats['ROLLING_PACE'],
-        'DEF_RATING_DIFF': home_stats['ROLLING_DEF_RATING'] - away_stats['ROLLING_DEF_RATING'],
-        'CORE_INJURY_DIFF': injury_diff
-    }])
-
-    prob = model.predict_proba(features)[0][1]
-    return prob, home_details, away_details, injury_diff
+    return (result['home_prob'], describe(result['home_details']), describe(result['away_details']),
+            result['injury_diff'], result['stale_warning'])
 
 # ─────────────────────────────────────────────
 # SIDEBAR
@@ -169,8 +90,15 @@ st.sidebar.title("NBA Predictor")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("Navigate", ["🏀 Today's Slate", "📊 Backtest Results", "🤖 Model Performance"])
 st.sidebar.markdown("---")
-st.sidebar.caption("Data through: Feb 11, 2026")
-st.sidebar.caption("Model: XGBoost | ROC-AUC: 0.66")
+try:
+    _state = pd.read_csv('data/team_state.csv', parse_dates=['LAST_GAME_DATE'])
+    st.sidebar.caption(f"Data through: {_state['LAST_GAME_DATE'].max():%b %d, %Y}")
+    _metrics = pd.read_csv('data/test_metrics.csv').set_index('model')
+    _shipped = _metrics[_metrics['shipped']].index[0]
+    st.sidebar.caption(f"Model: {_shipped} | Held-out AUC: {_metrics.loc[_shipped, 'roc_auc']:.3f} "
+                       f"(Elo only: {_metrics.loc['Elo only (logistic)', 'roc_auc']:.3f})")
+except (FileNotFoundError, KeyError):
+    st.sidebar.caption("Run data_pipeline.py and train.py to populate metrics")
 
 # ─────────────────────────────────────────────
 # PAGE 1: TODAY'S SLATE
@@ -207,9 +135,8 @@ if page == "🏀 Today's Slate":
 
     st.markdown("---")
 
-    rotation_dict = get_all_rotations()
-    home_rotation = rotation_dict.get(home_team, [])
-    away_rotation = rotation_dict.get(away_team, [])
+    home_rotation = get_rotation(home_team)
+    away_rotation = get_rotation(away_team)
 
     col1, col2 = st.columns(2)
     home_injuries = []
@@ -222,7 +149,7 @@ if page == "🏀 Today's Slate":
         st.caption("✓ = OUT  |  New injury = last 1-3 games")
         if home_rotation:
             for i, player in enumerate(home_rotation):
-                core_tag = "⭐ " if i < 5 else ""
+                core_tag = "⭐ " if i < 4 else ""
                 is_out = st.checkbox(
                     f"{core_tag}{player['PLAYER_NAME']} ({player['impact_score']:.1f})",
                     key=f"home_out_{home_team}_{i}"
@@ -243,7 +170,7 @@ if page == "🏀 Today's Slate":
         st.caption("✓ = OUT  |  New injury = last 1-3 games")
         if away_rotation:
             for i, player in enumerate(away_rotation):
-                core_tag = "⭐ " if i < 5 else ""
+                core_tag = "⭐ " if i < 4 else ""
                 is_out = st.checkbox(
                     f"{core_tag}{player['PLAYER_NAME']} ({player['impact_score']:.1f})",
                     key=f"away_out_{away_team}_{i}"
@@ -264,10 +191,12 @@ if page == "🏀 Today's Slate":
     if st.button("🔮 Generate Prediction", type="primary", use_container_width=True):
         with st.spinner("Analyzing matchup..."):
             try:
-                prob, home_details, away_details, injury_diff = run_prediction(
+                prob, home_details, away_details, injury_diff, stale_warning = run_prediction(
                     home_team, away_team, home_injuries, away_injuries, home_acute, away_acute
                 )
                 away_prob = 1 - prob
+                if stale_warning:
+                    st.warning(stale_warning)
 
                 st.markdown("---")
                 st.subheader("📊 Prediction Results")
@@ -318,56 +247,43 @@ if page == "🏀 Today's Slate":
 # ─────────────────────────────────────────────
 elif page == "📊 Backtest Results":
     st.title("📊 Backtest Results")
-    st.markdown("Flat $10 betting simulation on all games in training set")
+    st.markdown("Walk-forward held-out games only: each game was predicted by a model trained on earlier games. "
+                "No betting simulation, since the data has no historical odds.")
     st.markdown("---")
 
     try:
-        from sklearn.metrics import brier_score_loss, accuracy_score
+        from sklearn.metrics import brier_score_loss, accuracy_score, log_loss
 
-        df_bt = load_training_set()
-        model = load_model()
+        preds = load_test_predictions()
+        y_true = preds['TARGET']
 
-        X = df_bt.drop(columns=['TARGET'])
-        y_true = df_bt['TARGET']
-        probs = model.predict_proba(X)[:, 1]
-        preds = model.predict(X)
+        rows = []
+        for name, col in [('Shipped model', 'MODEL_PROB'), ('Elo only', 'ELO_PROB')]:
+            p = preds[col]
+            rows.append({'Model': name, 'ROC-AUC': roc_auc_score(y_true, p),
+                         'Accuracy': accuracy_score(y_true, p > 0.5),
+                         'Log loss': log_loss(y_true, p), 'Brier': brier_score_loss(y_true, p)})
+        st.dataframe(pd.DataFrame(rows).set_index('Model').style.format('{:.4f}'))
+        st.caption(f"{len(preds)} games from {preds['GAME_DATE'].min():%b %d, %Y} "
+                   f"to {preds['GAME_DATE'].max():%b %d, %Y}")
 
-        results = pd.DataFrame({
-            'Actual': y_true.values,
-            'Predicted': preds,
-            'Probability': probs
-        })
-
-        def calc_profit(row):
-            if row['Predicted'] == 1:
-                return 9.10 if row['Actual'] == 1 else -10.0
-            return 0
-
-        results['Profit'] = results.apply(calc_profit, axis=1)
-        results['Cumulative'] = results['Profit'].cumsum()
-
-        accuracy = accuracy_score(y_true, preds)
-        brier = brier_score_loss(y_true, probs)
-        roc = roc_auc_score(y_true, probs)
-        total_profit = results['Profit'].sum()
-        bets_placed = (results['Predicted'] == 1).sum()
-        total_invested = bets_placed * 10
-        roi = total_profit / total_invested if total_invested > 0 else 0
-
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Accuracy", f"{accuracy:.1%}")
-        m2.metric("ROC-AUC", f"{roc:.4f}")
-        m3.metric("Brier Score", f"{brier:.4f}")
-        m4.metric("Total P&L", f"${total_profit:.2f}", delta="profit" if total_profit > 0 else "loss")
-        m5.metric("ROI", f"{roi:.1%}")
-
-        st.markdown("---")
-        st.subheader("Cumulative P&L Over Time")
-        st.line_chart(results['Cumulative'])
+        st.subheader("Calibration")
+        bins = [0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0]
+        calib = preds.assign(bucket=pd.cut(preds['MODEL_PROB'], bins=bins, include_lowest=True))
+        calib = calib.groupby('bucket', observed=True).agg(
+            games=('TARGET', 'size'), predicted=('MODEL_PROB', 'mean'), actual=('TARGET', 'mean'))
+        fig, ax = plt.subplots(figsize=(6, 5))
+        ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Perfect calibration')
+        ax.plot(calib['predicted'], calib['actual'], 'o-', color='steelblue', label='Shipped model')
+        ax.set_xlabel('Predicted home win probability')
+        ax.set_ylabel('Actual home win rate')
+        ax.legend()
+        st.pyplot(fig)
+        plt.close()
 
         st.subheader("Prediction Confidence Distribution")
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.hist(probs, bins=30, color='steelblue', edgecolor='white', alpha=0.8)
+        ax.hist(preds['MODEL_PROB'], bins=30, color='steelblue', edgecolor='white', alpha=0.8)
         ax.axvline(0.5, color='red', linestyle='--', label='50% threshold')
         ax.set_xlabel('Predicted Win Probability')
         ax.set_ylabel('Count')
@@ -387,17 +303,13 @@ elif page == "🤖 Model Performance":
 
     try:
         from sklearn.metrics import roc_curve
-        from sklearn.model_selection import train_test_split
 
-        df_train = load_training_set()
+        test_preds = load_test_predictions()
         model = load_model()
 
-        X = df_train.drop(columns=['TARGET'])
-        y = df_train['TARGET']
-
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        probs = model.predict_proba(X_test)[:, 1]
-        preds = model.predict(X_test)
+        y_test = test_preds['TARGET']
+        probs = test_preds['MODEL_PROB']
+        preds = (probs > 0.5).astype(int)
 
         fpr, tpr, _ = roc_curve(y_test, probs)
         auc = roc_auc_score(y_test, probs)
@@ -436,13 +348,13 @@ elif page == "🤖 Model Performance":
 
         st.subheader("Feature Importance")
         importance_df = pd.DataFrame({
-            'Feature': X.columns,
-            'Importance': model.feature_importances_
+            'Feature': FEATURES,
+            'Importance': feature_weights(model).values
         }).sort_values('Importance', ascending=True)
 
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.barh(importance_df['Feature'], importance_df['Importance'], color='steelblue')
-        ax.set_xlabel('Importance Score')
+        ax.set_xlabel('Weight (logistic coefficient or tree importance)')
         st.pyplot(fig)
         plt.close()
 

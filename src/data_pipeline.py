@@ -1,50 +1,51 @@
 import pandas as pd
 from elo import NBAEloCalculator
 from features import NBAFeatureProcessor
+from injuries import InjuryModel
 from matchups import create_matchup_data
+
 
 def run_full_pipeline():
     # 1. Load from cached CSVs (skip ingestion)
     print("Loading cached data...")
     raw_game_df = pd.read_csv('data/raw_nba_data.csv')
     player_boxscores = pd.read_csv('data/raw_player_boxscores.csv')
-    
+    positions_df = pd.read_csv('data/player_positions.csv')
+
     raw_game_df['GAME_DATE'] = pd.to_datetime(raw_game_df['GAME_DATE'])
     player_boxscores['GAME_DATE'] = pd.to_datetime(player_boxscores['GAME_DATE'])
-    
     print(f"Loaded {len(raw_game_df)} team games and {len(player_boxscores)} player rows.")
-    
-    # 2. Add Elo Ratings
+
+    # 2. Elo ratings (pre-game for features, post-game for live predictions)
     print("Calculating Elo...")
     elo_calc = NBAEloCalculator()
     df_with_elo = elo_calc.process_season(raw_game_df)
-    
-    # 3. Process Features & Backfill Injuries
-    print("Engineering Features (This will take a few minutes)...")
-    processor = NBAFeatureProcessor(df_with_elo)
-    
-    # Run the backfill first to get CORE_INJURY_DIFF
-    positions_df = pd.read_csv('data/player_positions.csv')
-    df_with_injuries = processor.backfill_historical_injuries(df_with_elo, player_boxscores, positions_df)
 
-    
-    # Update the processor's internal dataframe and run the rest
-    processor.df = df_with_injuries
-    processed_df = (processor.add_advanced_stats()
-                             .add_comprehensive_stats()
-                             .add_context_features()
-                             .add_rolling_momentum()
-                             .get_final_data())
-    
-    # 4. Create Matchups (The differentials)
-    print("Creating Matchup Differentials...")
+    # 3. Injury impact for every team-game, using only data from before that game
+    injury_model = InjuryModel(player_boxscores, raw_game_df, positions_df)
+    df_with_injuries = injury_model.backfill(df_with_elo)
+
+    # 4. Team stats, rest, and rolling form
+    print("Engineering features...")
+    processor = NBAFeatureProcessor(df_with_injuries)
+    processor = (processor.add_advanced_stats()
+                          .add_comprehensive_stats()
+                          .add_context_features()
+                          .add_rolling_momentum())
+    processed_df = processor.get_final_data()
+
+    # 5. One row per game with home-minus-away differentials
+    print("Creating matchup differentials...")
     final_data = create_matchup_data(processed_df)
-    
-    # 5. Save
     final_data.to_csv('data/final_training_set.csv', index=False)
-    # Save this for the predict.py to look up latest stats
-    processed_df.to_csv('data/processed_data_with_elo.csv', index=False)
-    print(f"Pipeline Complete! Generated {len(final_data)} games.")
+
+    # 6. Live state for predict.py / app.py: form going into each team's NEXT game
+    state = processor.latest_team_state().merge(elo_calc.current_ratings(), on='TEAM_ID', how='left')
+    state.to_csv('data/team_state.csv', index=False)
+
+    print(f"Pipeline complete. Generated {len(final_data)} games "
+          f"({final_data['GAME_DATE'].min().date()} to {final_data['GAME_DATE'].max().date()}).")
+
 
 if __name__ == "__main__":
     run_full_pipeline()
