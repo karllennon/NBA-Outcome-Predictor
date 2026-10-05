@@ -141,6 +141,24 @@ div[class*="st-key-game-"] button p { font-size: 0.86rem; }
 .cv-tile .v { font-size: 1.6rem; font-weight: 800; color:#f2f5fb; margin-top: 4px; }
 .cv-tile .s { font-size: 0.78rem; color:#93a0b8; }
 @media (max-width: 900px) { .cv-tiles { grid-template-columns: repeat(2, 1fr); } }
+
+/* Decision cards */
+.cv-dec-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.cv-dec { background: linear-gradient(180deg, rgba(25,36,59,0.96), rgba(17,26,43,0.96));
+          border: 1px solid rgba(132,160,210,0.16); border-radius: 14px; padding: 12px 14px; }
+.cv-dec.lean { border-color: rgba(12,163,12,0.55); box-shadow: 0 0 0 1px rgba(12,163,12,0.18) inset; }
+.cv-dec-head { display:flex; justify-content:space-between; align-items:center; gap: 8px; margin-bottom: 8px; }
+.cv-dec-model { text-align:right; font-size: 0.8rem; color:#b6c1d6; }
+.cv-dec-model b { color:#f2f5fb; }
+.cv-dec-row { display:grid; grid-template-columns: 86px 1fr auto; gap: 8px; align-items:center;
+              padding: 7px 0; border-top: 1px solid rgba(132,160,210,0.09); }
+.cv-dec-mkt { font-size: 0.68rem; letter-spacing: 0.1em; text-transform: uppercase; color:#8fa0bd; font-weight: 700; }
+.cv-dec-line { font-size: 0.82rem; color:#dfe5f1; }
+.cv-dec-line .sub { color:#93a0b8; font-size: 0.75rem; }
+.cv-dec-reason { font-size: 0.76rem; color:#b6c1d6; margin: 2px 0 0 0; line-height: 1.35; }
+.cv-dec-note { font-size: 0.75rem; color:#fab219; margin-top: 6px; }
+.cv-dec-foot { font-size: 0.68rem; color:#6b7a94; margin-top: 8px; }
+.cv-pill.lean { background: rgba(12,163,12,0.2); color: #7be07b; border-color: rgba(12,163,12,0.6); font-size: 0.74rem; }
 </style>
 """
 

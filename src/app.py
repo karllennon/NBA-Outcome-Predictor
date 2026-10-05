@@ -400,6 +400,98 @@ def upcoming_card(mode, current_date, all_dates):
     ui.html_block(ui.card('Coming up', f'<table class="cv-table">{rows}</table>'))
 
 
+# ─────────────────────────────────────────────────────────────── decision cards
+
+def _badge(d):
+    """Green lean badge or gray no-play badge, always with the edge."""
+    if not d or d.get('mid') is None:
+        return ui.pill('NO PRICE', 'neutral')
+    e = d['edge_pts']
+    edge = f"{e:+.0f} pts" if abs(e) >= 10 else (f"{e:+.1f} pts" if abs(e) >= 0.05 else "0 pts")
+    if d.get('side'):
+        return ui.pill(f"{d['label']} · {edge}", 'lean')
+    return ui.pill(f"No play · {edge}", 'neutral')
+
+
+def _market_row(name, g, d, market):
+    if not d or d.get('mid') is None:
+        line = '<span class="sub">no usable Kalshi price</span>'
+    elif market == 'spread':
+        line = (f"{ui.esc(d['line_text'])}<br><span class='sub'>model {d['p_fav_covers']:.0%} for "
+                f"{ui.esc(d['fav'])} -{d['strike']:g}</span>")
+    else:
+        line = (f"{ui.esc(d['team'])} {d['mid'] * 100:.0f}¢"
+                f"<br><span class='sub'>model {d['p_side']:.0%} for {ui.esc(d['team'])}</span>")
+    reason = '' if not d or d.get('mid') is None else \
+        f'<div class="cv-dec-reason">{ui.esc(decisions.reason(g, d, market))}</div>'
+    return (f'<div class="cv-dec-row"><span class="cv-dec-mkt">{name}</span>'
+            f'<span class="cv-dec-line">{line}</span>{_badge(d)}</div>{reason}')
+
+
+def _outcome(g, d, market):
+    """Replay only: did the lean win?"""
+    if g.get('HOME_PTS') is None or not d or not d.get('side'):
+        return ''
+    margin = g['HOME_PTS'] - g['AWAY_PTS']
+    if market == 'moneyline':
+        won = (margin > 0) == (d['side'] == 'YES')
+    else:
+        fav_margin = margin if d['fav'] == g['HOME_ABBR'] else -margin
+        won = (fav_margin > d['strike']) == (d['side'] == 'YES')
+    return ui.pill(f"{market} lean {'won' if won else 'lost'}", 'good' if won else 'crit')
+
+
+def decision_card(g, d):
+    lean = any(x and x.get('side') for x in (d['moneyline'], d['spread']))
+    tip = fmt_tip(g.get('TIP_TIME_ET'))
+    model_txt = (f"Model: <b>{ui.esc(g.get('SPREAD_TEXT') or '–')}</b> · "
+                 f"{ui.esc(g['HOME_ABBR'] if g['MODEL_HOME_PROB'] >= 0.5 else g['AWAY_ABBR'])} "
+                 f"<b>{max(g['MODEL_HOME_PROB'], 1 - g['MODEL_HOME_PROB']):.0%}</b> to win")
+    score = ''
+    if g.get('HOME_PTS') is not None:
+        score = f" · final {g['AWAY_PTS']}–{g['HOME_PTS']}"
+    notes = list(d['flags']) + list(d['warnings']) + list(g.get('WARNINGS') or [])
+    if g.get('TOSS_UP'):
+        notes.append('Win probability and spread pick different favorites: close to a toss-up')
+    notes_html = ''.join(f'<div class="cv-dec-note">⚠ {ui.esc(n)}</div>' for n in dict.fromkeys(notes))
+    outcomes = ' '.join(x for x in (_outcome(g, d['spread'], 'spread'), _outcome(g, d['moneyline'], 'moneyline')) if x)
+    return (f'<div class="cv-dec {"lean" if lean else ""}">'
+            f'<div class="cv-dec-head"><div>{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> '
+            f'{ui.badge(g["HOME_ABBR"], "sm")}<div class="cv-small" style="margin-top:4px">{ui.esc(tip + " ET" if tip else "")}'
+            f'{ui.esc(score)}</div></div><div class="cv-dec-model">{model_txt}</div></div>'
+            f'{_market_row("Spread", g, d["spread"], "spread")}'
+            f'{_market_row("Moneyline", g, d["moneyline"], "moneyline")}'
+            f'{notes_html}'
+            f'{"<div style=" + chr(39) + "margin-top:6px" + chr(39) + ">" + outcomes + "</div>" if outcomes else ""}'
+            f'<div class="cv-dec-foot">{ui.esc(decisions.DISCLAIMER)} Leans need {decisions.MIN_EDGE_PTS:g}+ pts '
+            f'after Kalshi fees.</div></div>')
+
+
+def decision_section(games_today, key):
+    """Prominent per-game decision cards with the 'only leans' filter."""
+    rows = []
+    for g in games_today:
+        d = decisions.game_decisions(g)
+        best = max([x['edge_pts'] for x in (d['moneyline'], d['spread']) if x and x.get('side')] or [None],
+                   key=lambda v: -1e9 if v is None else v)
+        rows.append((g, d, best))
+    n_leans = sum(1 for _, _, b in rows if b is not None)
+    head_l, head_r = st.columns([3, 1.4], vertical_alignment='center')
+    with head_l:
+        ui.html_block(f'<div class="cv-title" style="margin:4px 0 6px 0"><span>Decisions · spread and moneyline</span>'
+                      f'<span class="cv-sub">{n_leans} of {len(rows)} games with a lean · '
+                      f'{ui.esc(decisions.DISCLAIMER)}</span></div>')
+    with head_r:
+        only = st.toggle('Only games with a lean, largest edge first', key=f'only-leans-{key}')
+    if only:
+        rows = sorted([r for r in rows if r[2] is not None], key=lambda r: -r[2])
+        if not rows:
+            ui.html_block(ui.card('No leans', f'<div class="cv-muted">No game clears the {decisions.MIN_EDGE_PTS:g}-point '
+                                               'edge threshold after fees.</div>'))
+            return
+    ui.html_block('<div class="cv-dec-grid">' + ''.join(decision_card(g, d) for g, d, _ in rows) + '</div>')
+
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FULL_REFRESH_STEPS = [
     ('Downloading new games from stats.nba.com', 'src/ingest.py'),
@@ -521,6 +613,8 @@ def page_dashboard():
         upcoming_card('Live', None, date_list)
         return
 
+    decision_section(games_today, 'dash')
+
     ids = [g['GAME_ID'] for g in games_today]
     if st.session_state.get('game') not in ids:
         st.session_state['game'] = ids[0]
@@ -562,8 +656,26 @@ def page_markets():
     ui.html_block('<div class="cv-header"><div><div class="cv-brand">Markets</div>'
                   '<div class="cv-date">Model vs Kalshi</div>'
                   '<div class="cv-mode">Held-out games from the walk-forward test, with Kalshi\'s price at tip-off</div></div></div>')
+    # Decisions for the day the Dashboard is showing (live games, else the chosen replay day)
+    try:
+        live = live_view()
+    except Exception:
+        live = []
+    if live and st.session_state.get('mode', 'Live') == 'Live':
+        day_games, day_label = live, 'today'
+    else:
+        dates = list(replay_dates().index)
+        day = st.session_state.get('replay_day', dates[-1] if dates else None)
+        day_games = replay_view(str(pd.Timestamp(day).date())) if day is not None else []
+        day_label = f"replay · {pd.Timestamp(day):%b %d, %Y}" if day is not None else ''
+    if day_games:
+        st.caption(f"Decisions for {day_label} (change the day on the Dashboard).")
+        decision_section(day_games, 'markets')
     metric_tiles()
     preds = load_test_predictions()
+    if not os.path.exists('data/market_history.csv'):
+        st.info("Run `python src/market_odds.py --history` and `python src/train.py` first (Kalshi data stays local).")
+        return
     market = pd.read_csv('data/market_history.csv', dtype={'GAME_ID': str})
     market['GAME_ID'] = market['GAME_ID'].astype(int)
     d = preds.merge(market[['GAME_ID', 'MARKET_HOME_PROB']], on='GAME_ID').dropna(subset=['MARKET_HOME_PROB'])

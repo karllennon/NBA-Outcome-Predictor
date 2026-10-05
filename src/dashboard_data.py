@@ -101,6 +101,8 @@ def day_view_replay(game_date):
             'STATUS': 'final',
             'MODEL_HOME_PROB': float(p.MODEL_PROB), 'ELO_HOME_PROB': float(p.ELO_PROB),
             'MARKET_HOME_PROB': market_prob,
+            'MARKET_YES_BID': None if mk is None else mk['HOME_YES_BID'],
+            'MARKET_YES_ASK': None if mk is None else mk['HOME_YES_ASK'],
             'EVENT_TICKER': None if mk is None else mk['EVENT_TICKER'],
             'HOME_PTS': int(home['PTS']), 'AWAY_PTS': int(away['PTS']),
             'HOME_WIN': home['WL'] == 'W',

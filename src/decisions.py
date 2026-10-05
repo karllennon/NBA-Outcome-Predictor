@@ -138,7 +138,8 @@ def reason(g, d, market):
     """One plain-English line explaining a decision."""
     home, away = g['HOME_ABBR'], g['AWAY_ABBR']
     margin = g.get('MODEL_HOME_MARGIN')
-    by = '' if margin is None else (f"Model: {home if margin > 0 else away} by {abs(margin):.0f}. ")
+    from spread_model import round_half
+    by = '' if margin is None else (f"Model: {home if margin > 0 else away} by {float(round_half(abs(margin))):g}. ")
     if market == 'spread':
         if not d or d.get('mid') is None:
             return 'No usable Kalshi spread price.'
