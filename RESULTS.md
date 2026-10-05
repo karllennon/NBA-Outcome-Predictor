@@ -97,3 +97,50 @@ used in training; the dashboard checkboxes still override.
 
 The old `src/injury_scraper.py` scraped RotoWire, whose terms do not allow it, and was not used
 anywhere; it was removed.
+
+## Phase 3: Player impact
+
+Baseline: the Phase 2 model (official reports, with replacement boosts), 1,762 held-out games.
+
+### 3.1 Replacement boosts (STAR_BOOST, MINUTES_BOOST)
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7369 | 67.93% | 0.5984 | 0.2058 |
+| Before: with boosts | 0.7483 | 69.24% | 0.5872 | 0.2014 |
+| **No replacement boosts (kept)** | **0.7514** | **69.69%** | **0.5851** | **0.2004** |
+
+Log loss -0.0021 (SE 0.0012), better in 3 of 4 folds. This confirms the earlier finding
+(0.7243 AUC without vs 0.7228 with). The boosts, the position lookup they used
+(`data/player_positions.csv`) and the "new injury?" overrides in the CLI and dashboard, which
+only fed the boosts, were removed. Every absent rotation player now counts his full impact.
+
+### 3.2 Weighting impact by recent minutes (not kept)
+
+Impact = per-minute impact over the last 15 games x minutes per game over the last 5.
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7369 | 67.93% | 0.5984 | 0.2058 |
+| Shipped: mean impact, last 15 games | 0.7483 | 69.24% | 0.5872 | 0.2014 |
+| Per-minute impact x recent MPG | 0.7478 | 69.18% | 0.5876 | 0.2016 |
+
+Log loss +0.0005 (SE 0.0009), better in 2 of 4 folds: no improvement, reverted. (Measured
+before 3.1 was applied; the shipped impact score is unchanged by 3.1.)
+
+### 3.3 Public all-in-one plus-minus metric
+
+- **EPM** (dunksandthrees.com): full data needs a paid subscription; its `/api/` is disallowed
+  in robots.txt. Not used.
+- **LEBRON** (BBall Index): paid. Not used.
+- **RAPM** (nbarapm.com): data is served from `/api/`, which robots.txt disallows. Not used.
+- **DARKO DPM** (darko.app): the site states its leaderboard has a CSV download and that a
+  "Time Machine" sets it to any past date, so it can be used legally.
+
+**Caveat, not confirmed: whether DARKO's Time Machine shows ratings as they were published on
+that date.** The site's changelog says the Time Machine was added on 2026-09-27, and DARKO
+shows ratings back to 1996-97, long before DARKO existed. So past-date values are most likely
+the current model re-run over games up to that date. Each player's rating "going into each
+game" appears to use only earlier games, but the model's design and tuning were fit with data
+that includes later seasons. Any gain measured with these values may therefore be slightly
+optimistic.

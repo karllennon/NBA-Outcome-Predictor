@@ -21,10 +21,10 @@ END = pd.Timestamp('2024-01-10')
 
 @pytest.fixture(scope='module')
 def raw():
-    games, players, positions = load_raw()
+    games, players = load_raw()
     games = games[games['GAME_DATE'] <= END].copy()
     players = players[players['GAME_DATE'] <= END].copy()
-    return games, players, positions
+    return games, players
 
 
 def perturb(games, players, cutoff=CUTOFF):
@@ -53,17 +53,17 @@ def frame_equal_before(a, b, key, cols, cutoff=CUTOFF):
 
 def test_perturbation_changes_later_features(raw):
     """Sanity check: the perturbation does move features after the cutoff."""
-    games, players, positions = raw
+    games, players = raw
     g2, p2 = perturb(games, players)
-    a, _, _ = build_dataset(games, players, positions, verbose=False)
-    b, _, _ = build_dataset(g2, p2, positions, verbose=False)
+    a, _, _ = build_dataset(games, players, verbose=False)
+    b, _, _ = build_dataset(g2, p2, verbose=False)
     after_a = a[a['GAME_DATE'] > CUTOFF + pd.Timedelta(days=3)].set_index('GAME_ID')[FEATURES]
     after_b = b[b['GAME_DATE'] > CUTOFF + pd.Timedelta(days=3)].set_index('GAME_ID')[FEATURES]
     assert not np.allclose(after_a.values, after_b.loc[after_a.index].values)
 
 
 def test_elo_is_pre_game(raw):
-    games, players, _ = raw
+    games, players = raw
     g2, _ = perturb(games, players)
     a = NBAEloCalculator().process_season(games)
     b = NBAEloCalculator().process_season(g2)
@@ -71,7 +71,7 @@ def test_elo_is_pre_game(raw):
 
 
 def test_rolling_stats_use_only_prior_games(raw):
-    games, players, _ = raw
+    games, players = raw
     g2, _ = perturb(games, players)
 
     def rolling(df):
@@ -85,18 +85,18 @@ def test_rolling_stats_use_only_prior_games(raw):
 
 
 def test_injury_loss_uses_only_prior_games(raw):
-    games, players, positions = raw
+    games, players = raw
     g2, p2 = perturb(games, players)
-    a = InjuryModel(players, games, positions).backfill(games, verbose=False)
-    b = InjuryModel(p2, g2, positions).backfill(g2, verbose=False)
+    a = InjuryModel(players, games).backfill(games, verbose=False)
+    b = InjuryModel(p2, g2).backfill(g2, verbose=False)
     frame_equal_before(a, b, ['GAME_ID', 'TEAM_ID'], ['CORE_INJURY_LOSS'])
 
 
 def test_full_feature_set_has_no_leakage(raw):
-    games, players, positions = raw
+    games, players = raw
     g2, p2 = perturb(games, players)
-    a, _, _ = build_dataset(games, players, positions, verbose=False)
-    b, _, _ = build_dataset(g2, p2, positions, verbose=False)
+    a, _, _ = build_dataset(games, players, verbose=False)
+    b, _, _ = build_dataset(g2, p2, verbose=False)
     frame_equal_before(a, b, ['GAME_ID'], FEATURES)
 
 
@@ -107,7 +107,7 @@ def _report(rows):
 
 
 def test_injury_reports_after_tipoff_are_ignored(raw):
-    games, players, positions = raw
+    games, players = raw
     team = 'Denver Nuggets'
     day = games[(games['TEAM_NAME'] == team) & (games['GAME_DATE'] > CUTOFF)]['GAME_DATE'].min()
     star = (players[(players['TEAM_NAME'] == team) & (players['GAME_DATE'] < day)]
@@ -122,7 +122,7 @@ def test_injury_reports_after_tipoff_are_ignored(raw):
                        f'{last}, {first}', 'Out')])
 
     def loss(reports):
-        m = InjuryModel(players, games, positions, reports=reports, use_reports=True)
+        m = InjuryModel(players, games, reports=reports, use_reports=True)
         return m.historical_loss(team, day)
 
     base = loss(before)

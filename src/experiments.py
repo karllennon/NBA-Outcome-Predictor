@@ -35,8 +35,8 @@ def raw():
 
 
 def dataset(elo_params=None, injury_params=None, reports=None):
-    games, players, positions = raw()
-    df, _, _ = build_dataset(games, players, positions, elo_params=elo_params,
+    games, players = raw()
+    df, _, _ = build_dataset(games, players, elo_params=elo_params,
                              injury_params=injury_params, reports=reports, verbose=False)
     return df
 
@@ -109,23 +109,8 @@ def _with(**kw):
     return params
 
 
-@experiment
-def replacement_boosts():
-    reports = load_injury_reports() if data_pipeline.INJURY_PARAMS.get('use_reports') else None
-    return compare({
-        'Shipped (with boosts)': shipped_dataset(),
-        'No replacement boosts': dataset(injury_params=_with(use_boosts=False), reports=reports),
-    }, 'Replacement boosts')
-
-
-@experiment
-def minutes_weighting():
-    reports = load_injury_reports() if data_pipeline.INJURY_PARAMS.get('use_reports') else None
-    return compare({
-        'Shipped (mean impact, last 15)': shipped_dataset(),
-        'Per-minute impact x recent MPG': dataset(injury_params=_with(minutes_weighting=True),
-                                                  reports=reports),
-    }, 'Minutes weighting')
+# replacement_boosts and minutes_weighting were tested here and their switches removed after
+# the results (RESULTS.md, Phase 3): boosts hurt, minutes weighting did not help.
 
 
 if __name__ == "__main__":

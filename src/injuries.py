@@ -1,11 +1,11 @@
 """
 Injury impact model shared by training (historical backfill) and prediction.
 
-Both paths call the same two methods, so the CORE_INJURY_DIFF feature means the
-same thing when the model is trained and when it is used:
+Both paths call the same methods, so the CORE_INJURY_DIFF feature means the same thing
+when the model is trained and when it is used:
 
     rotation(team, as_of)            -> top-10 players with impact and availability status
-    net_loss(rotation, out_players)  -> impact lost after replacement boosts
+    net_loss(rotation, out_players)  -> total impact of the absent rotation players
 
 Who is out: from the official injury report when one is available (the last report
 published before tip-off, shared with live predictions via report_out), otherwise the
@@ -14,10 +14,14 @@ training-time guess that players who missed the previous game are still out.
 Availability status comes from how many of the team's most recent games a player
 has missed in a row:
     0 misses      -> 'healthy'
-    1-3 misses    -> 'acute'    (teammates have not adjusted yet; replacement boost applies)
-    4-20 misses   -> 'chronic'  (no boost)
+    1-3 misses    -> 'acute'
+    4-20 misses   -> 'chronic'
     21+ misses    -> 'inactive' (long-term absence, dropped from the rotation entirely,
                                  since the team's rolling stats already reflect it)
+
+Earlier versions gave acute absences of top-4 players a "replacement boost" (65% of the
+player's impact, +25% with a same-position backup). Removing it improved held-out log loss,
+so every absence now counts its full impact (RESULTS.md, Phase 3).
 """
 import numpy as np
 import pandas as pd
@@ -25,11 +29,7 @@ import pandas as pd
 ACUTE_MAX = 3
 CHRONIC_MAX = 20
 RECENT_GAMES = 15        # games used to score each player's impact
-RECENT_MINUTES_GAMES = 5 # games used for recent minutes per game (minutes weighting)
 ROTATION_SIZE = 10
-CORE_SIZE = 4            # top-4 absences earn a replacement boost
-STAR_BOOST = 0.65
-MINUTES_BOOST = 0.25
 
 
 def impact_score(df):
@@ -49,18 +49,9 @@ def status_from_misses(misses):
 
 
 class InjuryModel:
-    def __init__(self, player_boxscores, team_games, positions_df=None, reports=None,
-                 use_reports=False, include_doubtful=False, use_boosts=True,
-                 minutes_weighting=False):
-        """
-        use_reports / include_doubtful: who is out (see report_out)
-        use_boosts: apply the acute replacement boosts in net_loss
-        minutes_weighting: impact = per-minute impact over the last RECENT_GAMES games
-            x minutes per game over the last RECENT_MINUTES_GAMES games, so a player whose
-            role has grown or shrunk is scored at his current minutes
-        """
-        self.use_boosts = use_boosts
-        self.minutes_weighting = minutes_weighting
+    def __init__(self, player_boxscores, team_games, reports=None, use_reports=False,
+                 include_doubtful=False):
+        """use_reports / include_doubtful: who is out (see report_out)."""
         players = player_boxscores.copy()
         players['GAME_DATE'] = pd.to_datetime(players['GAME_DATE'])
         players = players[players['MIN'] > 0]
@@ -69,7 +60,7 @@ class InjuryModel:
 
         # Per-player arrays: dates, teams, impact (sorted by date) for fast as-of lookups
         self.player_logs = {
-            name: (g['GAME_DATE'].values, g['TEAM_NAME'].values, g['IMPACT'].values, g['MIN'].values)
+            name: (g['GAME_DATE'].values, g['TEAM_NAME'].values, g['IMPACT'].values)
             for name, g in players.groupby('PLAYER_NAME')
         }
 
@@ -86,10 +77,6 @@ class InjuryModel:
         tg = team_games.copy()
         tg['GAME_DATE'] = pd.to_datetime(tg['GAME_DATE'])
         self.team_dates = {t: np.sort(g['GAME_DATE'].unique()) for t, g in tg.groupby('TEAM_NAME')}
-
-        if positions_df is None:
-            positions_df = pd.DataFrame(columns=['PLAYER_NAME', 'POSITION'])
-        self.positions = dict(zip(positions_df['PLAYER_NAME'], positions_df['POSITION']))
 
         self.include_doubtful = include_doubtful
         self.reports = None
@@ -149,7 +136,7 @@ class InjuryModel:
             log = self.player_logs.get(player)
             if log is None:
                 continue
-            p_dates, p_teams, p_impact, p_min = log
+            p_dates, p_teams, p_impact = log
             n = np.searchsorted(p_dates, as_of)  # games strictly before as_of
             if n == 0:
                 continue
@@ -158,12 +145,7 @@ class InjuryModel:
             if current_team != team_name:
                 continue  # player's most recent team is somewhere else
 
-            window = slice(max(0, n - RECENT_GAMES), n)
-            if self.minutes_weighting:
-                per_minute = p_impact[window].sum() / max(p_min[window].sum(), 1e-9)
-                impact = per_minute * p_min[max(0, n - RECENT_MINUTES_GAMES):n].mean()
-            else:
-                impact = p_impact[window].mean()
+            impact = p_impact[max(0, n - RECENT_GAMES):n].mean()
 
             played = self.played_for_team.get((team_name, player), set())
             misses = 0
@@ -184,37 +166,19 @@ class InjuryModel:
 
     def net_loss(self, rotation, out_players, verbose=False):
         """
-        Impact a team loses from absent players, after replacement boosts.
-        out_players: {player_name: 'acute' or 'chronic'}
-        - acute top-4 absence (first one only): 65% star boost, plus 25% minutes boost if a
-          same-position player ranked 6-10 is available
-        - every other absence: full impact lost
-        Returns (net_loss, list of (player, status, impact, boost)).
+        Total impact of the rotation players who are out.
+        out_players: {player_name: status}
+        Returns (net_loss, list of (player, status, impact)).
         """
-        total, details, boost_used = 0.0, [], False
-        out_names = set(out_players)
-
-        for rank, row in rotation.iterrows():
-            player = row['PLAYER_NAME']
-            if player not in out_players:
+        total, details = 0.0, []
+        for row in rotation.itertuples():
+            if row.PLAYER_NAME not in out_players:
                 continue
-            impact, status, boost = row['impact_score'], out_players[player], 0.0
-
-            if self.use_boosts and status == 'acute' and rank < CORE_SIZE and not boost_used:
-                boost = impact * STAR_BOOST
-                position = self.positions.get(player)
-                if position:
-                    bench = rotation.iloc[5:ROTATION_SIZE]
-                    for _, b in bench.iterrows():
-                        if b['PLAYER_NAME'] not in out_names and self.positions.get(b['PLAYER_NAME']) == position:
-                            boost += impact * MINUTES_BOOST
-                            break
-                boost_used = True
-
-            total += impact - boost
-            details.append((player, status, impact, boost))
+            status = out_players[row.PLAYER_NAME]
+            total += row.impact_score
+            details.append((row.PLAYER_NAME, status, row.impact_score))
             if verbose:
-                print(f"    {player}: {status}, -{impact:.1f} +{boost:.1f}")
+                print(f"    {row.PLAYER_NAME}: {status}, -{row.impact_score:.1f}")
         return total, details
 
     def out_statuses(self, rotation, listed_out):
@@ -230,8 +194,7 @@ class InjuryModel:
     def historical_loss(self, team_name, game_date):
         """
         Training-time estimate. With an injury report for this game: the players it lists as
-        out. Without one: players who missed the team's previous game are assumed out,
-        classified by how many games in a row they have missed.
+        out. Without one: players who missed the team's previous game are assumed out.
         """
         rot = self.rotation(team_name, game_date)
         listed = self.report_out(team_name, game_date)
@@ -242,13 +205,11 @@ class InjuryModel:
         loss, _ = self.net_loss(rot, out)
         return loss
 
-    def live_status(self, rotation, player_name, force_acute=False):
+    def live_status(self, rotation, player_name):
         """
-        Prediction-time status for a player listed as out today. A player who played the
-        last game is about to miss his first, so he counts as acute.
+        Status for a player listed as out. A player who played the last game is about to
+        miss his first, so he counts as acute. None if he is not in the rotation.
         """
-        if force_acute:
-            return 'acute'
         row = rotation[rotation['PLAYER_NAME'] == player_name]
         if row.empty:
             return None

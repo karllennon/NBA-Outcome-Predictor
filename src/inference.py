@@ -22,10 +22,9 @@ class GamePredictor:
         team_games = pd.read_csv(f'{data_dir}/raw_nba_data.csv')
         players = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
         players.columns = players.columns.str.strip()
-        positions = pd.read_csv(f'{data_dir}/player_positions.csv')
         # Same settings as the training pipeline, so the injury feature means the same thing
         params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
-        self.injuries = InjuryModel(players, team_games, positions, **params)
+        self.injuries = InjuryModel(players, team_games, **params)
         self.report, self.report_error = None, None
         try:
             trades = pd.read_csv(f'{data_dir}/recent_trades.csv')
@@ -80,11 +79,11 @@ class GamePredictor:
         row['DAYS_SINCE_LAST_GAME'] = days_since
         return row
 
-    def _injury_loss(self, team_name, rotation, out_players, acute_overrides):
+    def _injury_loss(self, team_name, rotation, out_players):
         out = {}
         skipped = []
         for player in out_players:
-            status = self.injuries.live_status(rotation, player, force_acute=player in acute_overrides)
+            status = self.injuries.live_status(rotation, player)
             if status is None:
                 skipped.append(player)  # not in the current top-10 rotation
             else:
@@ -93,7 +92,7 @@ class GamePredictor:
         return loss, details, skipped
 
     def predict(self, home_team, away_team, home_out=None, away_out=None,
-                home_acute=(), away_acute=(), game_date=None):
+                game_date=None):
         """home_out / away_out: players out. None = take them from the injury report
         (load_injury_report() first); a list is a manual override."""
         game_date = pd.Timestamp(game_date or date.today())
@@ -113,8 +112,8 @@ class GamePredictor:
             home_out = [p for p in home_out if p in set(home_rot['PLAYER_NAME'])]
         if sources.get('away') == 'report':
             away_out = [p for p in away_out if p in set(away_rot['PLAYER_NAME'])]
-        h_loss, h_details, h_skipped = self._injury_loss(home_team, home_rot, home_out, home_acute)
-        a_loss, a_details, a_skipped = self._injury_loss(away_team, away_rot, away_out, away_acute)
+        h_loss, h_details, h_skipped = self._injury_loss(home_team, home_rot, home_out)
+        a_loss, a_details, a_skipped = self._injury_loss(away_team, away_rot, away_out)
 
         features = pd.DataFrame([{
             'ELO_DIFF': home['ELO'] - away['ELO'],

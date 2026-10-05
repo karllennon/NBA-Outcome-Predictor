@@ -73,16 +73,11 @@ def get_todays_games():
     except Exception:
         return None
 
-def run_prediction(home_team, away_team, home_injuries, away_injuries, home_acute, away_acute):
-    result = load_predictor().predict(home_team, away_team, home_injuries, away_injuries,
-                                      home_acute, away_acute)
+def run_prediction(home_team, away_team, home_injuries, away_injuries):
+    result = load_predictor().predict(home_team, away_team, home_injuries, away_injuries)
 
     def describe(details):
-        out = []
-        for player, status, impact, boost in details:
-            icon = "⚡" if status == 'acute' else "🔴"
-            out.append(f"{icon} **{player}**: {status.upper()} (-{impact:.1f}, +{boost:.1f} boost)")
-        return out
+        return [f"🔴 **{player}**: {status.upper()} (-{impact:.1f})" for player, status, impact in details]
 
     return (result['home_prob'], describe(result['home_details']), describe(result['away_details']),
             result['injury_diff'], result['stale_warning'])
@@ -154,13 +149,11 @@ if page == "🏀 Today's Slate":
 
     col1, col2 = st.columns(2)
     home_injuries = []
-    home_acute = []
     away_injuries = []
-    away_acute = []
 
     with col1:
         st.subheader(f"🏠 {home_team}")
-        st.caption("✓ = OUT  |  New injury = last 1-3 games")
+        st.caption("✓ = OUT")
         if home_rotation:
             for i, player in enumerate(home_rotation):
                 core_tag = "⭐ " if i < 4 else ""
@@ -173,18 +166,12 @@ if page == "🏀 Today's Slate":
                 )
                 if is_out:
                     home_injuries.append(player['PLAYER_NAME'])
-                    is_new = st.checkbox(
-                        f"   ⚡ New injury?",
-                        key=f"home_acute_{home_team}_{i}"
-                    )
-                    if is_new:
-                        home_acute.append(player['PLAYER_NAME'])
         else:
             st.warning("No rotation data found")
 
     with col2:
         st.subheader(f"✈️ {away_team}")
-        st.caption("✓ = OUT  |  New injury = last 1-3 games")
+        st.caption("✓ = OUT")
         if away_rotation:
             for i, player in enumerate(away_rotation):
                 core_tag = "⭐ " if i < 4 else ""
@@ -197,12 +184,6 @@ if page == "🏀 Today's Slate":
                 )
                 if is_out:
                     away_injuries.append(player['PLAYER_NAME'])
-                    is_new = st.checkbox(
-                        f"  ⚡ New injury?",
-                        key=f"away_acute_{away_team}_{i}"
-                    )
-                    if is_new:
-                        away_acute.append(player['PLAYER_NAME'])
         else:
             st.warning("No rotation data found")
 
@@ -212,7 +193,7 @@ if page == "🏀 Today's Slate":
         with st.spinner("Analyzing matchup..."):
             try:
                 prob, home_details, away_details, injury_diff, stale_warning = run_prediction(
-                    home_team, away_team, home_injuries, away_injuries, home_acute, away_acute
+                    home_team, away_team, home_injuries, away_injuries
                 )
                 away_prob = 1 - prob
                 if stale_warning:

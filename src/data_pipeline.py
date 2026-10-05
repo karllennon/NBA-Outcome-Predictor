@@ -14,10 +14,9 @@ INJURY_PARAMS = {"use_reports": True}
 def load_raw(data_dir='data'):
     raw_game_df = pd.read_csv(f'{data_dir}/raw_nba_data.csv')
     player_boxscores = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
-    positions_df = pd.read_csv(f'{data_dir}/player_positions.csv')
     raw_game_df['GAME_DATE'] = pd.to_datetime(raw_game_df['GAME_DATE'])
     player_boxscores['GAME_DATE'] = pd.to_datetime(player_boxscores['GAME_DATE'])
-    return raw_game_df, player_boxscores, positions_df
+    return raw_game_df, player_boxscores
 
 
 def load_injury_reports():
@@ -25,7 +24,7 @@ def load_injury_reports():
     return load_archive()
 
 
-def build_dataset(raw_game_df, player_boxscores, positions_df, elo_params=None,
+def build_dataset(raw_game_df, player_boxscores, elo_params=None,
                   injury_params=None, reports=None, verbose=True):
     """
     Returns (matchup training set, feature processor, Elo calculator).
@@ -41,7 +40,7 @@ def build_dataset(raw_game_df, player_boxscores, positions_df, elo_params=None,
     df_with_elo = elo_calc.process_season(raw_game_df)
 
     # Injury impact for every team-game, using only data from before that game
-    injury_model = InjuryModel(player_boxscores, raw_game_df, positions_df,
+    injury_model = InjuryModel(player_boxscores, raw_game_df,
                                reports=reports, **injury_params)
     df_with_injuries = injury_model.backfill(df_with_elo, verbose=verbose)
 
@@ -61,11 +60,11 @@ def build_dataset(raw_game_df, player_boxscores, positions_df, elo_params=None,
 
 def run_full_pipeline():
     print("Loading cached data...")
-    raw_game_df, player_boxscores, positions_df = load_raw()
+    raw_game_df, player_boxscores = load_raw()
     print(f"Loaded {len(raw_game_df)} team games and {len(player_boxscores)} player rows.")
     reports = load_injury_reports() if INJURY_PARAMS.get('use_reports') else None
 
-    final_data, processor, elo_calc = build_dataset(raw_game_df, player_boxscores, positions_df,
+    final_data, processor, elo_calc = build_dataset(raw_game_df, player_boxscores,
                                                     reports=reports)
     final_data.to_csv('data/final_training_set.csv', index=False)
 
