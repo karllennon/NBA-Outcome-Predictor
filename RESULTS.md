@@ -384,6 +384,22 @@ at most 1.8 points (median 0.4). When they disagree, the win probability picked 
 52.5% and the spread in 47.5% (59 games, no real difference). The dashboard marks these games as
 close to a toss-up.
 
+### Spread vs the Kalshi market line
+
+Kalshi has NBA spread markets (series `KXNBASPREAD`, checked against its docs and API in October
+2026): a ladder of "team wins by over N.5 points" markets per game. The market's line is where
+the favorite's ladder crosses 50 cents, interpolated from pre-tip-off prices
+(`python src/market_odds.py --spread-history`, about 2 hours, local and git-ignored). A usable
+line exists for about 86% of the held-out 2025-26 games. Live spread ladders are appended to a
+local snapshot file by the slate and by `python src/market_odds.py`.
+
+Result (exact figures kept local, Kalshi terms): the market line is slightly more accurate than
+the model's spread (a gap of about 0.2 points of mean absolute error, under two standard
+errors), and the model lands on the right side of the market line about half the time, no
+better than a coin flip. The model's spread still beats the Elo-only spread on the same games.
+Where the model and the line differ by 4+ points, the model's side did a little better than
+half, but that slice was chosen after seeing the results and is within noise.
+
 ### Spread uncertainty (sigma) and calibration
 
 Each fold's sigma is the residual standard deviation on the last 20% of that fold's training
@@ -444,3 +460,13 @@ favorite or underdog. Backtest on held-out 2025-26 games (figures kept local, Ka
   hold up out of sample.
 
 Hypothetical analysis, not betting advice.
+
+### Paper-trade backtest (final, held-out 2025-26 games)
+
+With the full spread history: edge-based spread leans and moneyline leans (5+ points after
+fees, $1 at the ask) were both roughly break-even, slightly negative, and well within noise. So
+was buying the model's pick in games where it agrees with the market favorite. The only positive
+slice was again the model picking the market's underdog, which remains an untested hypothesis
+(see above). Conclusion: on last season's prices the decision rules show no reliable edge; the
+paper-trade log this season is the real test. Detailed tables: `python src/experiments.py
+paper_trades` (local report, git-ignored).
