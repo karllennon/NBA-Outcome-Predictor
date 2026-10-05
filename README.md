@@ -131,14 +131,21 @@ The GitHub Action (`.github/workflows/refresh_data.yml`) is manual-only. It fail
 the fetch fails, or when no new games arrive between November and March.
 
 ## Dashboard
-- **Today's Slate**: game predictor; players listed Out on today's injury report are pre-checked
-  and can be overridden.
-- **Model vs Market**: today's games with model and Kalshi probabilities; gaps of 5+ points
-  are highlighted (smaller gaps are within fees and noise).
-- **Track Record**: accuracy, log loss, Brier score and calibration of logged live predictions
-  against the market, once games finish.
-- **Backtest Results**: held-out games, calibration.
-- **Model Performance**: walk-forward table, market comparison, ROC curve, feature weights.
+`streamlit run src/app.py`: a dark, card-based dashboard with top navigation.
+
+- **Dashboard**: the day's games on the left; the selected game's matchup (records, arena, final
+  score in replay), model vs Kalshi win probability, Kalshi's price over the hours before
+  tip-off, team form before the game, and the official injury report in the middle; the day's
+  Kalshi game markets (model, market, gap, highlighted at 5+ points), what drives the model's
+  number, and upcoming games on the right.
+  - **Live** mode: today's games; every prediction is logged before tip-off.
+  - **Replay** mode: any game day of the walk-forward test (2025-01 to 2026-04), showing the
+    probability a model trained only on earlier games gave, Kalshi's price at tip-off, the injury
+    report, and the result. Useful in the offseason and for seeing how the model and market differ.
+- **Markets**: model vs Kalshi on every held-out game, and how the two did when they disagreed.
+- **Predictor**: any matchup today, with players listed Out pre-checked and adjustable.
+- **Track Record**: accuracy, log loss and calibration of logged live predictions vs the market.
+- **Model**: walk-forward results, market comparison, calibration, ROC curve, feature weights.
 
 ## Known Limitations
 - The market's tip-off price beats the model (log loss 0.569 vs 0.582 on 1,223 games).

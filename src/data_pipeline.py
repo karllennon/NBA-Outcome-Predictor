@@ -91,6 +91,10 @@ def run_full_pipeline():
                                                     reports=reports)
     final_data.to_csv('data/final_training_set.csv', index=False)
 
+    # Pre-game team form for every game (dashboard replay of past days)
+    cols = ['GAME_ID', 'TEAM_ID', 'TEAM_NAME', 'GAME_DATE', 'PRE_GAME_ELO', 'WIN_STREAK', 'DAYS_REST'] +            [c for c in processor.df.columns if c.startswith('ROLLING_')]
+    processor.df[cols].to_csv('data/team_game_features.csv', index=False)
+
     # Live state for predict.py / app.py: form going into each team's NEXT game
     state = processor.latest_team_state().merge(elo_calc.current_ratings(), on='TEAM_ID', how='left')
     state.to_csv('data/team_state.csv', index=False)

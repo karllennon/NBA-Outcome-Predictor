@@ -18,3 +18,4 @@ matplotlib
 streamlit
 pdfplumber
 pytest
+plotly

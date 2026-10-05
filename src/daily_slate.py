@@ -59,7 +59,10 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
                'MODEL_HOME_PROB': res['home_prob'], 'MARKET_HOME_PROB': market_prob,
                'MARKET_YES_BID': None if m is None else m['HOME_YES_BID'],
                'MARKET_YES_ASK': None if m is None else m['HOME_YES_ASK'],
-               'HOME_OUT': '; '.join(res['home_out']), 'AWAY_OUT': '; '.join(res['away_out'])}
+               'HOME_OUT': '; '.join(res['home_out']), 'AWAY_OUT': '; '.join(res['away_out']),
+               'EVENT_TICKER': None if m is None else m['EVENT_TICKER'],
+               'FEATURES': res['features'].iloc[0].to_dict(),
+               'HOME_DETAILS': res['home_details'], 'AWAY_DETAILS': res['away_details']}
         row['GAP'] = None if pd.isna(market_prob) else res['home_prob'] - market_prob
         rows.append(row)
         pregame = g.STATUS == 'scheduled' and (pd.isna(g.TIP_TIME_ET) or now_et < g.TIP_TIME_ET)
