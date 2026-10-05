@@ -1,6 +1,18 @@
 import pandas as pd
 import numpy as np
 
+# Regular-season games played at a neutral site: the 2019-20 restart in the Orlando "bubble".
+# The listed home team had no crowd or travel edge, so Elo gives no home advantage there.
+NEUTRAL_SITE_WINDOWS = [('2020-07-30', '2020-10-11')]
+
+
+def is_neutral_site(game_dates):
+    dates = pd.to_datetime(pd.Series(game_dates))
+    out = pd.Series(False, index=dates.index)
+    for start, end in NEUTRAL_SITE_WINDOWS:
+        out |= dates.between(pd.Timestamp(start), pd.Timestamp(end))
+    return out.values
+
 
 class NBAEloCalculator:
     """
@@ -45,7 +57,7 @@ class NBAEloCalculator:
         results = {}
         current_season = None
 
-        for gid, season, h_id, a_id, home_win, margin, complete in games.itertuples(index=False):
+        for gid, season, h_id, a_id, home_win, margin, complete, neutral in games.itertuples(index=False):
             if current_season is not None and season != current_season:
                 self._regress_to_mean()
             current_season = season
@@ -59,12 +71,13 @@ class NBAEloCalculator:
             results[(gid, a_id)] = a_elo
 
             # Home-court advantage enters the expectation, not the stored rating
-            exp_home = self.calculate_expected_score(h_elo + self.home_advantage, a_elo)
+            hca = 0 if neutral else self.home_advantage
+            exp_home = self.calculate_expected_score(h_elo + hca, a_elo)
 
             if home_win:
-                winner_diff = (h_elo + self.home_advantage) - a_elo
+                winner_diff = (h_elo + hca) - a_elo
             else:
-                winner_diff = a_elo - (h_elo + self.home_advantage)
+                winner_diff = a_elo - (h_elo + hca)
             multiplier = self.get_margin_multiplier(margin, winner_diff)
 
             shift = self.k_factor * multiplier * (home_win - exp_home)
@@ -100,6 +113,7 @@ class NBAEloCalculator:
             'HOME_WIN': (out['WL'] == 'W').astype(int),
             'MARGIN': out['PLUS_MINUS'].abs().fillna(0),
             'COMPLETE': out['COMPLETE'],
+            'NEUTRAL': is_neutral_site(out['GAME_DATE']),
         })
 
     def current_ratings(self):
@@ -132,7 +146,8 @@ def elo_tables(games, grid=None, **fixed):
         a = d[~is_home][['GAME_ID', 'PRE_GAME_ELO']]
         t = home.merge(h, on='GAME_ID').merge(a, on='GAME_ID', suffixes=('_H', '_A'))
         t['ELO_DIFF'] = t['PRE_GAME_ELO_H'] - t['PRE_GAME_ELO_A']
-        t['ELO_PROB'] = 1 / (1 + 10 ** (-(t['ELO_DIFF'] + params['home_advantage']) / 400))
+        hca = np.where(is_neutral_site(t['GAME_DATE']), 0, params['home_advantage'])
+        t['ELO_PROB'] = 1 / (1 + 10 ** (-(t['ELO_DIFF'] + hca) / 400))
         t['Y'] = (t['WL'] == 'W').astype(int)
         t['GAME_DATE'] = pd.to_datetime(t['GAME_DATE'])
         tables[combo] = (params, t.dropna(subset=['ELO_DIFF']).set_index('GAME_ID'))

@@ -36,10 +36,13 @@ COLUMNS = ['REPORT_TIME', 'GAME_DATE', 'GAME_TIME', 'MATCHUP', 'TEAM_NAME',
            'PLAYER_NAME', 'PLAYER', 'STATUS', 'REASON']
 HEADERS = {'User-Agent': 'nba-outcome-predictor (personal research project)'}
 
-# Header words -> report columns, in left-to-right order
-HEADER_COLUMNS = [('Game', 'GAME_DATE'), ('Game', 'GAME_TIME'), ('Matchup', 'MATCHUP'),
-                  ('Team', 'TEAM_NAME'), ('Player', 'PLAYER_NAME'),
-                  ('Current', 'STATUS'), ('Reason', 'REASON')]
+# First word of each header cell -> report column. The two 'Game' cells are date then time.
+# Reports before ~2021-22 add 'Category' (merged into REASON) and 'Previous Status' (ignored),
+# and put Reason before Current Status, so columns are matched by name, not position.
+HEADER_COLUMNS = {'Game': ['GAME_DATE', 'GAME_TIME'], 'Matchup': ['MATCHUP'], 'Team': ['TEAM_NAME'],
+                  'Player': ['PLAYER_NAME'], 'Category': ['REASON'], 'Reason': ['REASON'],
+                  'Current': ['STATUS'], 'Previous': ['PREVIOUS_STATUS']}
+REQUIRED_COLUMNS = {'GAME_DATE', 'GAME_TIME', 'MATCHUP', 'TEAM_NAME', 'PLAYER_NAME', 'STATUS', 'REASON'}
 
 SUFFIXES = {'jr', 'sr', 'ii', 'iii', 'iv', 'v'}
 
@@ -145,12 +148,15 @@ def _column_bounds(words):
     """x positions where each column starts, read from the header row."""
     header_top = next(w['top'] for w in words if w['text'] == 'Matchup')
     header = sorted([w for w in words if abs(w['top'] - header_top) < 2], key=lambda w: w['x0'])
-    starts, i = [], 0
+    starts, used = [], {}
     for w in header:
-        if i < len(HEADER_COLUMNS) and w['text'] == HEADER_COLUMNS[i][0]:
-            starts.append((w['x0'] - 2, HEADER_COLUMNS[i][1]))
-            i += 1
-    if i != len(HEADER_COLUMNS):
+        names = HEADER_COLUMNS.get(w['text'])
+        if names:
+            k = used.get(w['text'], 0)
+            if k < len(names):
+                starts.append((w['x0'] - 2, names[k]))
+                used[w['text']] = k + 1
+    if not REQUIRED_COLUMNS <= {name for _, name in starts}:
         raise ValueError(f"Unexpected header: {[w['text'] for w in header]}")
     return header_top, starts
 
@@ -179,6 +185,31 @@ def _lines(words, header_top, starts):
         col = _column_of(w['x0'], starts)
         line['cells'][col] = (line['cells'].get(col, '') + ' ' + w['text']).strip()
     return lines
+
+
+_TEAMS_BY_ABBR = None
+
+
+def _resolve_team(fragment, matchup):
+    """
+    Full team name (box-score spelling) for a team cell. Older reports wrap long names over two
+    lines ('Minnesota' / 'Timberwolves'), so a fragment is matched to whichever of the two teams
+    in the matchup (e.g. 'MIN@PHI') contains it. Unresolvable text is returned unchanged.
+    """
+    global _TEAMS_BY_ABBR
+    if _TEAMS_BY_ABBR is None:
+        from nba_api.stats.static import teams
+        _TEAMS_BY_ABBR = {t['abbreviation']: t['full_name'].replace('Los Angeles Clippers', 'LA Clippers')
+                          for t in teams.get_teams()}
+    fragment = re.sub(r'\s+', ' ', fragment or '').strip()
+    candidates = [_TEAMS_BY_ABBR.get(a.strip()) for a in str(matchup).split('@')]
+    candidates = [c for c in candidates if c]
+    key = team_key(fragment)
+    if not key:
+        return fragment
+    hits = [c for c in candidates if key in team_key(c) or team_key(c) in key
+            or (key == 'laclippers' and c == 'LA Clippers')]
+    return hits[0] if len(hits) == 1 else fragment
 
 
 def _clean(text):
@@ -253,7 +284,7 @@ def parse_report(pdf_bytes):
     df['PLAYER_NAME'] = df['PLAYER_NAME'].map(_clean)
     df['PLAYER'] = df['PLAYER_NAME'].map(report_to_first_last)
     df['REASON'] = df['REASON'].map(_clean)
-    df['TEAM_NAME'] = df['TEAM_NAME'].map(lambda t: re.sub(r'\s+', ' ', t or '').strip())
+    df['TEAM_NAME'] = [_resolve_team(t, m) for t, m in zip(df['TEAM_NAME'], df['MATCHUP'])]
     return df[COLUMNS].reset_index(drop=True)
 
 
@@ -282,16 +313,52 @@ def fetch_report(slot, session=None):
     return df
 
 
-def fetch_latest(as_of=None, session=None, max_hours=36):
-    """Most recent report at or before `as_of` (default now, Eastern). Archives it."""
+def _published(slot, session):
+    try:
+        return session.head(report_url(slot), headers=HEADERS, timeout=15).status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def fetch_latest(as_of=None, session=None, max_hours=12, pause=0.25):
+    """
+    Most recent report at or before `as_of` (default now, Eastern). Archives it.
+    Gentle on the server: probes one slot per hour (newest first), then the 15-minute slots
+    after the newest hit, with a pause between requests. Hammering the CDN gets this machine
+    temporarily refused (HTTP 403 on every report), which happened once during development.
+    """
     as_of = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.now(tz=ET)
     session = session or requests.Session()
-    for slot in report_slots_before(as_of, max_hours):
-        df = fetch_report(slot, session)
-        if df is not None:
-            save(df, slot)
-            return df
-    return None
+    slots = report_slots_before(as_of, max_hours)
+    hourly = [s for s in slots if s.minute == (30 if s.normalize() < NEW_FORMAT_FROM else 0)]
+    hit = None
+    for slot in hourly:
+        if _published(slot, session):
+            hit = slot
+            break
+        time.sleep(pause)
+    if hit is None:
+        return None
+    newer = [s for s in slots if hit < s]          # 15-minute slots after the hourly hit
+    for slot in sorted(newer, reverse=True):
+        if _published(slot, session):
+            hit = slot
+            break
+        time.sleep(pause)
+    df = fetch_report(hit, session)
+    if df is not None:
+        save(df, hit)
+    return df
+
+
+def load_latest_archived():
+    """The newest archived report only (cheap; file names sort by report time)."""
+    if not os.path.isdir(ARCHIVE_DIR):
+        return pd.DataFrame(columns=COLUMNS)
+    files = sorted(f for f in os.listdir(ARCHIVE_DIR) if f.endswith('.csv.gz'))
+    if not files:
+        return pd.DataFrame(columns=COLUMNS)
+    return pd.read_csv(os.path.join(ARCHIVE_DIR, files[-1]), parse_dates=['REPORT_TIME', 'GAME_DATE'])
 
 
 def load_archive():
@@ -339,16 +406,20 @@ def last_report_before_tip(reports, game_date, team, minutes_before=30):
 
 # ---------------------------------------------------------------- backfill
 
-def backfill(game_dates, session=None, pause=0.3, minutes_before=30):
+MAX_MISSING_STREAK = 5
+
+
+def backfill(game_dates, session=None, pause=1.0, minutes_before=30):
     """
     For each game date: read the 5 PM-ish report to learn the tip times, then archive the last
-    report published `minutes_before` minutes before each distinct tip time. Skips report
-    slots already archived.
+    report published `minutes_before` minutes before each distinct tip time. Skips days already
+    archived, so it can be re-run to resume. Stops after MAX_MISSING_STREAK game days in a row
+    with no report, which in practice means the server is refusing requests (HTTP 403).
     """
     session = session or requests.Session()
     existing = {f[:-7] for f in os.listdir(ARCHIVE_DIR) if f.endswith('.csv.gz')} if os.path.isdir(ARCHIVE_DIR) else set()
     done_days = {e[:10] for e in existing}
-    missing = []
+    missing, streak = [], 0
     for i, day in enumerate(sorted(set(pd.to_datetime(pd.Series(game_dates)).dt.normalize()))):
         if day.strftime('%Y-%m-%d') in done_days:
             continue
@@ -361,7 +432,13 @@ def backfill(game_dates, session=None, pause=0.3, minutes_before=30):
             time.sleep(pause)
         if first is None or first.empty:
             missing.append(day.date())
+            streak += 1
+            if streak >= MAX_MISSING_STREAK:
+                print(f"  Stopping at {day.date()}: no report for {streak} game days in a row "
+                      "(server refusing requests?). Re-run later to resume.", flush=True)
+                break
             continue
+        streak = 0
         save(first, first['REPORT_TIME'].iloc[0])
         tips = {parse_tip_time(day, t) for t in first['GAME_TIME'].dropna().unique()}
         tips = sorted(t for t in tips if t is not None)

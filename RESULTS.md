@@ -207,3 +207,93 @@ offseason regression). Smaller K and stronger regression than the FiveThirtyEigh
 a home edge of 25-50 Elo points (about 54-57% at even strength), consistent with the smaller
 home-court advantage of recent seasons. A first, narrower grid chose values on its lower edges;
 it was widened before the result above.
+
+From here on every row, including "Elo only", re-tunes Elo inside each fold on its training
+games, exactly as `train.py` does.
+
+### 5.2 Point-margin regression -> win probability (not kept)
+
+Ridge regression on the home margin with the same features, converted with
+P(home win) = Phi(margin / sigma). sigma is fit by log loss on the last 20% of each fold's
+training games using a regression fit on the earlier 80%, then the regression is refit on all
+training games (fitted sigma 11.1-15.0 points).
+
+| Model (1,762 held-out games) | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 68.56% | 0.5947 | 0.2041 |
+| **Shipped: logistic classifier** | **0.7564** | **70.49%** | **0.5816** | **0.1989** |
+| Margin regression -> normal CDF | 0.7541 | 70.09% | 0.5850 | 0.2000 |
+
+Log loss +0.0034 (SE 0.0015), better in 1 of 4 folds. Not kept; the classifier stays.
+
+### 5.3 More seasons, special seasons, and XGBoost (not kept)
+
+`ingest.py --since 2018-19` added 2018-19 through 2022-23 (19,038 team rows, 202,839 player
+rows; the unused `*_RANK` columns are now dropped, keeping the player file at 34 MB).
+Special seasons:
+- **2019-20 restart in the Orlando bubble** (88 seeding games from 2020-07-30): neutral site, so
+  Elo applies no home advantage to them and they are not used as training rows (they still
+  update Elo, rolling stats and travel).
+- **2020-21** (72 games, limited crowds): kept as normal games. Home advantage is tuned on the
+  training data, and the long 2020 break is handled by the 7-day rest cap and the
+  between-season Elo regression.
+
+Injury reports for the older seasons: the parser was extended to the pre-2021 report layout
+(extra Category / Previous Status columns, team names wrapped over two lines) and the backfill
+archived 2018-12 to 2020-01-17. **The rest of 2020-01 to 2022-23 is not archived**: during the
+backfill the NBA's CDN started answering every report request with HTTP 403, including reports
+it had served earlier that day (most likely rate limiting after many requests, made worse by a
+short-lived parallel probe I added for live lookups and then removed). The backfill now waits
+1 second between requests and stops after 5 game days in a row with no report. Those seasons
+use the "missed the previous game" fallback. Re-running
+`python src/injury_reports.py --backfill --since 2018-10-16` resumes where it stopped.
+
+Same 1,762 held-out games; only the training history differs:
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only, 2023-24 on | 0.7421 | 68.56% | 0.5947 | 0.2041 |
+| **Shipped: logistic, 2023-24 on** | **0.7564** | **70.49%** | **0.5816** | **0.1989** |
+| Logistic, 2018-19 on | 0.7561 | 70.26% | 0.5818 | 0.1989 |
+| XGBoost depth 2, early stopping, 2018-19 on | 0.7539 | 69.69% | 0.5873 | 0.2006 |
+| XGBoost depth 3, early stopping, 2018-19 on | 0.7508 | 69.47% | 0.5896 | 0.2016 |
+| XGBoost depth 4, early stopping, 2018-19 on | 0.7510 | 69.41% | 0.5890 | 0.2015 |
+| XGBoost depth 2, early stopping, 2023-24 on | 0.7551 | 70.09% | 0.5876 | 0.2008 |
+| XGBoost depth 3, early stopping, 2023-24 on | 0.7501 | 69.69% | 0.5911 | 0.2021 |
+
+More history: +0.0002 (SE 0.0018), 2 of 4 folds, so training stays on 2023-24 onward
+(`FIRST_SEASON_ID`). XGBoost (shallow trees, min_child_weight 20-40, subsample 0.8, early
+stopping on the most recent 15% of each fold's training games, 150-290 rounds) still loses to
+logistic regression by 0.006-0.010 log loss with either history, better in at most 1 of 4
+folds. With ~3,500-9,000 games and a dozen mostly linear differentials, trees add variance and
+no signal.
+
+### 5.4 Shipped model
+
+`SHIPPED_MODEL = 'logistic'` (unchanged): logistic regression, C = 0.1, standardized features,
+trained on 2023-24 onward with the tuned Elo.
+
+## Phase 6: New features
+
+`src/context.py` computes all candidates per team-game from earlier games only. Live
+predictions append the upcoming game to the game log and call the same function; a test checks
+that live values equal the training values. Arena coordinates, time zones and elevations are in
+`data/arenas.csv` (the Clippers use Intuit Dome for all seasons, about 15 km from their old
+arena). Each group was added on its own to the shipped features (1,762 held-out games; baseline
+0.5816):
+
+| Feature group | ROC-AUC | Log loss | Change (SE) | Folds better | Kept |
+|---|---|---|---|---|---|
+| Travel km since last game + time zones crossed | 0.7568 | 0.5810 | -0.0006 (0.0005) | 4/4 | **yes** |
+| Schedule density: games in last 4 / 7 days, 3-in-4 | 0.7564 | 0.5817 | +0.0001 (0.0004) | 2/4 | no |
+| Altitude: road team at Denver or Utah | 0.7563 | 0.5816 | +0.0000 (0.0000) | 0/4 | no |
+| SOS-adjusted net rating (last 10 games) | 0.7561 | 0.5818 | +0.0002 (0.0002) | 1/4 | no |
+
+Travel is a small gain, about one standard error, but it improved every fold, so it is kept
+under the rules. Altitude adds nothing beyond the home-court terms already in the model;
+schedule density adds nothing beyond rest days and back-to-backs; the opponent-adjusted net
+rating adds nothing beyond Elo and rolling plus/minus.
+
+Final shipped model (Phases 0-6), walk-forward on 1,762 held-out games:
+**ROC-AUC 0.7568, accuracy 70.49%, log loss 0.5810, Brier 0.1986** (Elo only: 0.7421 / 0.5947).
+On the 1,223 of those games with a Kalshi price: model log loss 0.5824 vs market 0.5697.

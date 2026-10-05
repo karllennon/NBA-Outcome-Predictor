@@ -4,6 +4,7 @@ data/final_training_set.csv
 data/team_state.csv
 data/test_predictions.csv
 data/test_metrics.csv
+data/market_metrics.csv
 
 # Model file
 models/nba_model.joblib

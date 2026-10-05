@@ -141,3 +141,30 @@ def test_elo_tuning_uses_only_games_before_cutoff(raw):
     a, _ = tune_elo(elo_tables(games, grid), CUTOFF)
     b, _ = tune_elo(elo_tables(g2, grid), CUTOFF)
     assert a == b
+
+
+def test_context_features_use_only_prior_games(raw):
+    from context import add_context, CONTEXT_COLUMNS
+    games, players = raw
+    g2, _ = perturb(games, players)
+    a, b = add_context(games), add_context(g2)
+    frame_equal_before(a, b, ['GAME_ID', 'TEAM_ID'], CONTEXT_COLUMNS)
+
+
+def test_context_for_upcoming_game_matches_training_value(raw):
+    """Live path: drop a played game's box score (as if it had not happened yet) and recompute.
+    Its features must equal the ones training used, and earlier rows must not move."""
+    from context import add_context, CONTEXT_COLUMNS
+    games, _ = raw
+    played = add_context(games)
+    gid = games[games['GAME_DATE'] == CUTOFF]['GAME_ID'].iloc[0]
+    upcoming = games[games['GAME_DATE'] <= CUTOFF].copy()
+    box = ['PTS', 'PLUS_MINUS', 'FGA', 'FTA', 'OREB', 'TOV', 'WL']
+    upcoming.loc[upcoming['GAME_ID'] == gid, box] = None
+    live = add_context(upcoming)
+    key = ['GAME_ID', 'TEAM_ID']
+    a = played[played['GAME_ID'] == gid].set_index(key)[CONTEXT_COLUMNS].sort_index()
+    b = live[live['GAME_ID'] == gid].set_index(key)[CONTEXT_COLUMNS].sort_index()
+    pd.testing.assert_frame_equal(a, b)
+    frame_equal_before(played[played['GAME_DATE'] < CUTOFF], live[live['GAME_DATE'] < CUTOFF],
+                       key, CONTEXT_COLUMNS)

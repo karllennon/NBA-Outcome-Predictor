@@ -66,7 +66,9 @@ def fetch_log(season, kind, retries=4, timeout=60, base_delay=10):
 
 
 def normalize(df):
-    df = df.copy()
+    """Zero-padded GAME_ID, parsed dates, and no league-rank columns (*_RANK: unused, and
+    about half the size of the player file)."""
+    df = df.drop(columns=[c for c in df.columns if c.endswith('_RANK')])
     df['GAME_ID'] = df['GAME_ID'].astype(str).str.zfill(10)
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     return df

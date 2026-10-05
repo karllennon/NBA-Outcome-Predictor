@@ -6,7 +6,8 @@ computed the same way as the training features.
 from datetime import date
 import joblib
 import pandas as pd
-from data_pipeline import INJURY_PARAMS, ELO_PARAMS
+from context import add_context, upcoming_rows
+from data_pipeline import INJURY_PARAMS, ELO_PARAMS, load_raw
 from elo import NBAEloCalculator
 from injuries import InjuryModel
 from matchups import FEATURES, injury_diff
@@ -15,15 +16,17 @@ OFFSEASON_GAP_DAYS = 90       # longer gap than this means a new season has star
 _ELO = NBAEloCalculator(**ELO_PARAMS)
 SEASON_CARRYOVER = _ELO.season_carryover   # same regression the training Elo applies between seasons
 MEAN_ELO = _ELO.mean_elo
+CONTEXT_LOOKBACK_DAYS = 60    # travel features only look back to the previous game
 
 
 class GamePredictor:
     def __init__(self, data_dir='data', model_path='models/nba_model.joblib'):
         self.model = joblib.load(model_path)
         self.state = pd.read_csv(f'{data_dir}/team_state.csv', parse_dates=['LAST_GAME_DATE'])
-        team_games = pd.read_csv(f'{data_dir}/raw_nba_data.csv')
-        players = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
+        # Same seasons as training (FIRST_SEASON_ID)
+        team_games, players = load_raw(data_dir)
         players.columns = players.columns.str.strip()
+        self.team_games = team_games
         # Same settings as the training pipeline, so the injury feature means the same thing
         params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
         self.injuries = InjuryModel(players, team_games, **params)
@@ -36,7 +39,7 @@ class GamePredictor:
 
     def load_injury_report(self, fetch=True):
         """Latest official injury report (downloaded and archived, or the newest archived one)."""
-        from injury_reports import fetch_latest, load_archive
+        from injury_reports import fetch_latest, load_latest_archived
         report = None
         if fetch:
             try:
@@ -44,9 +47,9 @@ class GamePredictor:
             except Exception as e:  # network down, format changed: fall back to manual input
                 self.report_error = f"{type(e).__name__}: {e}"
         if report is None:
-            archive = load_archive()
-            if len(archive):
-                report = archive[archive['REPORT_TIME'] == archive['REPORT_TIME'].max()]
+            latest = load_latest_archived()
+            if len(latest):
+                report = latest
         if report is not None and len(report):
             self.report = report
             self.injuries.set_reports(report)
@@ -80,6 +83,21 @@ class GamePredictor:
             row['ELO'] = SEASON_CARRYOVER * row['ELO'] + (1 - SEASON_CARRYOVER) * MEAN_ELO
         row['DAYS_SINCE_LAST_GAME'] = days_since
         return row
+
+    def _context(self, home_team, away_team, game_date):
+        """Travel / time-zone features for the upcoming game, from the same add_context used
+        in training: the game is appended to the log as a row without a box score."""
+        g = self.team_games
+        latest = g.sort_values('GAME_DATE').drop_duplicates('TEAM_NAME', keep='last')
+        abbr = dict(zip(latest['TEAM_NAME'], latest['TEAM_ABBREVIATION']))
+        abbr_to_team = {a: t for t, a in abbr.items()}
+        team_ids = dict(zip(latest['TEAM_ABBREVIATION'], latest['TEAM_ID']))
+        dates = pd.to_datetime(g['GAME_DATE'])
+        recent = g[(dates >= game_date - pd.Timedelta(days=CONTEXT_LOOKBACK_DAYS)) & (dates < game_date)]
+        rows = upcoming_rows(game_date, abbr[home_team], abbr[away_team], abbr_to_team, team_ids)
+        ctx = add_context(pd.concat([recent, rows], ignore_index=True))
+        ctx = ctx[ctx['GAME_ID'] == 'UPCOMING'].set_index('TEAM_NAME')
+        return ctx.loc[home_team], ctx.loc[away_team]
 
     def _injury_loss(self, team_name, rotation, out_players):
         out = {}
@@ -117,6 +135,7 @@ class GamePredictor:
         h_loss, h_details, h_skipped = self._injury_loss(home_team, home_rot, home_out)
         a_loss, a_details, a_skipped = self._injury_loss(away_team, away_rot, away_out)
 
+        h_ctx, a_ctx = self._context(home_team, away_team, game_date)
         features = pd.DataFrame([{
             'ELO_DIFF': home['ELO'] - away['ELO'],
             'EFG_DIFF': home['ROLLING_eFG_PCT'] - away['ROLLING_eFG_PCT'],
@@ -130,6 +149,8 @@ class GamePredictor:
             'PACE_DIFF': home['ROLLING_PACE'] - away['ROLLING_PACE'],
             'DEF_RATING_DIFF': home['ROLLING_DEF_RATING'] - away['ROLLING_DEF_RATING'],
             'CORE_INJURY_DIFF': injury_diff(h_loss, a_loss),
+            'TRAVEL_DIFF': h_ctx['TRAVEL_KM'] - a_ctx['TRAVEL_KM'],
+            'TZ_SHIFT_DIFF': h_ctx['TZ_SHIFT'] - a_ctx['TZ_SHIFT'],
         }])[FEATURES]
 
         stale_days = min(home['DAYS_SINCE_LAST_GAME'], away['DAYS_SINCE_LAST_GAME'])

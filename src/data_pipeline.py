@@ -1,10 +1,13 @@
 import pandas as pd
-from elo import NBAEloCalculator
+from context import add_context, CONTEXT_COLUMNS
+from elo import NBAEloCalculator, is_neutral_site
 from features import NBAFeatureProcessor
 from injuries import InjuryModel
 from matchups import create_matchup_data
 
 # Settings for the shipped pipeline. experiments.py overrides these to test alternatives.
+# First season used for training (SEASON_ID 2YYYY = regular season starting in YYYY).
+FIRST_SEASON_ID = 22023
 # Elo settings tuned by log loss of Elo's own predictions (python src/experiments.py elo_tuning;
 # RESULTS.md, Phase 5). Re-tune after adding seasons.
 ELO_PARAMS = {'k_factor': 12.5, 'home_advantage': 50, 'season_carryover': 0.5}
@@ -13,9 +16,19 @@ ELO_PARAMS = {'k_factor': 12.5, 'home_advantage': 50, 'season_carryover': 0.5}
 INJURY_PARAMS = {"use_reports": True}
 
 
-def load_raw(data_dir='data'):
+def load_games(data_dir='data', first_season_id=None):
+    """Team game logs from FIRST_SEASON_ID on, with parsed dates."""
+    first_season_id = FIRST_SEASON_ID if first_season_id is None else first_season_id
+    games = pd.read_csv(f'{data_dir}/raw_nba_data.csv', parse_dates=['GAME_DATE'])
+    return games[games['SEASON_ID'] >= first_season_id].reset_index(drop=True)
+
+
+def load_raw(data_dir='data', first_season_id=None):
+    first_season_id = FIRST_SEASON_ID if first_season_id is None else first_season_id
     raw_game_df = pd.read_csv(f'{data_dir}/raw_nba_data.csv')
+    raw_game_df = raw_game_df[raw_game_df['SEASON_ID'] >= first_season_id].reset_index(drop=True)
     player_boxscores = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
+    player_boxscores = player_boxscores[player_boxscores['GAME_ID'].isin(set(raw_game_df['GAME_ID']))]
     raw_game_df['GAME_DATE'] = pd.to_datetime(raw_game_df['GAME_DATE'])
     player_boxscores['GAME_DATE'] = pd.to_datetime(player_boxscores['GAME_DATE'])
     return raw_game_df, player_boxscores
@@ -55,9 +68,17 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
                           .add_rolling_momentum())
     processed_df = processor.get_final_data()
 
-    # One row per game with home-minus-away differentials
+    # Schedule, travel and opponent-adjusted form, from games before each one (context.py).
+    # Merged after get_final_data so missing values here never remove rows from the base set.
+    context = add_context(raw_game_df)[['GAME_ID', 'TEAM_ID'] + CONTEXT_COLUMNS]
+    processed_df = processed_df.merge(context, on=['GAME_ID', 'TEAM_ID'], how='left')
+
+    # One row per game with home-minus-away differentials. Neutral-site (bubble) games still
+    # feed Elo and rolling stats, but are not training rows: "home" meant nothing there.
     log("Creating matchup differentials...")
-    return create_matchup_data(processed_df), processor, elo_calc
+    matchups = create_matchup_data(processed_df)
+    matchups = matchups[~is_neutral_site(matchups['GAME_DATE'])].reset_index(drop=True)
+    return matchups, processor, elo_calc
 
 
 def run_full_pipeline():
