@@ -114,18 +114,25 @@ exits non-zero if any season can't be fetched. `python src/ingest.py --since 201
 from a given season.
 
 stats.nba.com does not answer GitHub-hosted runners (confirmed by a test run in October 2026),
-so the refresh runs on your own machine. The scripts run ingest -> pipeline -> train, archive the
-latest injury report, and log today's predictions with Kalshi prices:
+so the refresh runs on your own machine. The simplest way is the two buttons at the top of the
+dashboard:
+
+- **Update injuries & odds** (seconds): re-downloads the latest injury report and Kalshi prices,
+  recomputes today's predictions and logs them. Click it shortly before tip-off; the last
+  prediction logged before tip-off is the one the Track Record scores.
+- **Full data refresh** (a few minutes): downloads new results, rebuilds features and retrains
+  the model (ingest -> pipeline -> train). Click it the morning after games.
+
+To automate the same steps instead, schedule the refresh script. It runs ingest -> pipeline ->
+train, archives the latest injury report, and logs today's predictions with Kalshi prices:
 
 - macOS/Linux: `scripts/refresh.sh`. Daily at 10:00 with cron (`crontab -e`):
   `0 10 * * * /path/to/nba-outcome-predictor/scripts/refresh.sh >> /path/to/refresh.log 2>&1`
 - Windows: `scripts\refresh.bat`. Daily at 10:00 with Task Scheduler:
   `schtasks /Create /SC DAILY /ST 10:00 /TN "NBA refresh" /TR "\"C:\path\to\nba-outcome-predictor\scripts\refresh.bat\""`
 
-Injury reports change during the day, so for predictions that use the final pre-game report,
-also run `python src/daily_slate.py` about an hour before the first tip-off (for example 6:00 PM
-Eastern), or open the dashboard's Model vs Market page then. Only the last logged prediction
-before tip-off counts in the track record.
+Injury reports change during the day, so if you automate it, also run `python src/daily_slate.py`
+about an hour before the first tip-off (for example 6:00 PM Eastern).
 
 The GitHub Action (`.github/workflows/refresh_data.yml`) is manual-only. It fails loudly when
 the fetch fails, or when no new games arrive between November and March.

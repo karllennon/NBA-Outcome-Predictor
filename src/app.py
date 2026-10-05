@@ -374,6 +374,84 @@ def upcoming_card(mode, current_date, all_dates):
     ui.html_block(ui.card('Coming up', f'<table class="cv-table">{rows}</table>'))
 
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FULL_REFRESH_STEPS = [
+    ('Downloading new games from stats.nba.com', 'src/ingest.py'),
+    ('Rebuilding features', 'src/data_pipeline.py'),
+    ('Retraining and re-running the walk-forward evaluation', 'src/train.py'),
+    ('Archiving the latest injury report', 'src/injury_reports.py'),
+]
+
+
+def run_script(path):
+    """Run one pipeline script in a separate process (fresh imports); raise with its output on failure."""
+    import subprocess
+    proc = subprocess.run([sys.executable, '-u', path], cwd=ROOT, capture_output=True, text=True,
+                          env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+    if proc.returncode != 0:
+        tail = '\n'.join((proc.stdout + proc.stderr).strip().splitlines()[-15:])
+        raise RuntimeError(f"{path} failed:\n{tail}")
+    return proc.stdout
+
+
+def refresh_bar():
+    """Data freshness and the two refresh buttons."""
+    try:
+        state = pd.read_csv('data/team_state.csv', parse_dates=['LAST_GAME_DATE'])
+        data_through = f"{state['LAST_GAME_DATE'].max():%b %d, %Y}"
+    except FileNotFoundError:
+        data_through = 'no data'
+    trained = (datetime.fromtimestamp(os.path.getmtime('models/nba_model.joblib')).strftime('%b %d, %I:%M %p')
+               if os.path.exists('models/nba_model.joblib') else 'not trained')
+    report = load_predictor().report
+    report_txt = 'none' if report is None else f"{pd.Timestamp(report['REPORT_TIME'].max()):%b %d, %I:%M %p} ET"
+
+    info, b1, b2 = st.columns([3.2, 1, 1], vertical_alignment='center')
+    with info:
+        ui.html_block(f'<div class="cv-small">Games through <b>{data_through}</b> · model trained {trained} · '
+                      f'latest injury report {report_txt}</div>')
+    with b1:
+        quick = st.button('↻ Update injuries & odds', use_container_width=True,
+                          help='Re-download the latest injury report and Kalshi prices, recompute today\'s '
+                               'predictions and log them. Takes a few seconds. Use it shortly before tip-off.')
+    with b2:
+        full = st.button('⟳ Full data refresh', use_container_width=True,
+                         help='Download new game results, rebuild features and retrain the model. Takes a few '
+                              'minutes. Use it the morning after games.')
+    if quick:
+        load_predictor.clear()
+        live_view.clear()
+        trend_live.clear()
+        upcoming_live.clear()
+        st.session_state['refresh_msg'] = ('success', 'Injury report and Kalshi prices updated; today\'s '
+                                                      'predictions were re-logged.')
+        st.rerun()
+    if full:
+        with st.status('Refreshing data...', expanded=True) as status:
+            try:
+                for label, path in FULL_REFRESH_STEPS:
+                    status.write(f"{label}...")
+                    if path == 'src/injury_reports.py':
+                        try:
+                            run_script(path)       # offseason or report outage is not fatal
+                        except RuntimeError as e:
+                            status.write(f"Skipped: {str(e).splitlines()[-1]}")
+                        continue
+                    run_script(path)
+            except RuntimeError as e:
+                status.update(label='Refresh failed', state='error')
+                st.error(str(e))
+                return
+            status.update(label='Refresh complete', state='complete')
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.session_state['refresh_msg'] = ('success', 'Data refreshed and model retrained.')
+        st.rerun()
+    msg = st.session_state.pop('refresh_msg', None)
+    if msg:
+        st.toast(msg[1], icon='✅')
+
+
 def page_dashboard():
     games_all = load_games()
     try:
@@ -408,6 +486,7 @@ def page_dashboard():
         ui.html_block(f'<div class="cv-header"><div><div class="cv-brand">🏀 NBA Outcome Predictor</div>'
                       f'<div class="cv-date">{pd.Timestamp(day):%B %d, %Y}</div>'
                       f'<div class="cv-mode">{ui.esc(subtitle)}</div></div></div>')
+    refresh_bar()
 
     if not games_today:
         metric_tiles()
@@ -518,6 +597,7 @@ def page_predictor():
     ui.html_block('<div class="cv-header"><div><div class="cv-brand">Predictor</div>'
                   '<div class="cv-date">Any matchup, today</div>'
                   '<div class="cv-mode">Players listed Out on today\'s injury report are pre-checked; change them to test scenarios</div></div></div>')
+    refresh_bar()
     predictor = load_predictor()
     teams = predictor.teams()
     c1, c2 = st.columns(2)
