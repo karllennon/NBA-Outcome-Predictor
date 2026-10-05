@@ -296,7 +296,8 @@ rating adds nothing beyond Elo and rolling plus/minus.
 
 Final shipped model (Phases 0-6), walk-forward on 1,762 held-out games:
 **ROC-AUC 0.7568, accuracy 70.49%, log loss 0.5810, Brier 0.1986** (Elo only: 0.7421 / 0.5947).
-On the 1,223 of those games with a Kalshi price: model log loss 0.5824 vs market 0.5697.
+On the 1,223 of those games with a Kalshi price: model log loss 0.5824 vs market 0.5697
+(50/50 blend 0.5719, still worse than the market alone).
 
 ## Phase 7: Dashboard
 
