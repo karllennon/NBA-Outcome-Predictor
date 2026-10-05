@@ -1,4 +1,5 @@
 import time
+import numpy as np
 import pandas as pd
 import prediction_log as pl
 
@@ -15,7 +16,7 @@ def test_log_is_append_only_and_scores_the_last_pregame_row(tmp_path):
     path = tmp_path / 'log.csv'
     games = tmp_path / 'games.csv'
     pd.DataFrame({'GAME_ID': ['0022500883', '0022500883'], 'MATCHUP': ['CHA vs. DAL', 'DAL @ CHA'],
-                  'WL': ['W', 'L']}).to_csv(games, index=False)
+                  'WL': ['W', 'L'], 'PLUS_MINUS': [8, -8]}).to_csv(games, index=False)
 
     pl.append([_row('0022500883', 0.60, 0.80)], path)
     first = pd.read_csv(path)
@@ -45,3 +46,44 @@ def test_slate_table_highlights_only_gaps_of_five_points_or_more():
     styler = slate_table(slate)
     styler._compute()
     assert sorted({r for (r, _), css in styler.ctx.items() if css}) == [0]
+
+
+def test_new_columns_never_modify_old_log_rows(tmp_path):
+    path = tmp_path / 'prediction_log.csv'
+    old_cols = ['LOGGED_AT_UTC', 'GAME_ID', 'MODEL_HOME_PROB']
+    pl.append([{'GAME_ID': '0022600001', 'MODEL_HOME_PROB': 0.61}], str(path), columns=old_cols)
+    before = path.read_bytes()
+
+    pl.append([_row('0022600002', 0.55)], str(path))          # current, wider schema
+    assert path.read_bytes() == before                         # old file untouched
+    segs = pl.segments(str(path))
+    assert len(segs) == 2 and segs[0] == str(path)
+
+    log = pl.load(str(path))
+    assert list(log['GAME_ID']) == ['0022600001', '0022600002']
+    assert log.loc[0, 'MODEL_HOME_PROB'] == 0.61 and pd.isna(log.loc[0, 'SPREAD'])
+
+
+def test_paper_trades_settle_spread_and_moneyline():
+    record = pd.DataFrame([{
+        'GAME_ID': '1', 'GAME_DATE': '2026-11-01', 'HOME_ABBR': 'BOS', 'ACTUAL_MARGIN': 6,
+        'ML_SIDE': 'YES', 'ML_DECISION': 'Lean BOS', 'ML_P': 0.62, 'ML_MID': 0.53, 'ML_FILL': 0.54,
+        'SPREAD_SIDE': 'NO', 'SPREAD_DECISION': 'Lean LAL +7.5', 'SPREAD_FAV': 'BOS', 'SPREAD_STRIKE': 7.5,
+        'SPREAD_P': 0.58, 'SPREAD_MID': 0.47, 'SPREAD_FILL': 0.48}])
+    t = pl.paper_trades(record).set_index('market')
+    assert t.loc['moneyline', 'won'] and t.loc['spread', 'won']          # BOS won by 6 < 7.5
+    assert np.isclose(t.loc['moneyline', 'pnl'], 1 - 0.54 - 0.02)         # fee at 54 cents = 2 cents
+
+
+def test_pick_the_winner_trades_settle_and_split_by_market_underdog():
+    rows = [{'GAME_ID': '1', 'GAME_DATE': '2026-11-01', 'HOME_ABBR': 'BOS', 'ACTUAL_MARGIN': 5,
+             'PICK_TEAM': 'BOS', 'PICK_SIDE': 'YES', 'PICK_P': 0.56, 'PICK_MID': 0.41, 'PICK_FILL': 0.42,
+             'PICK_MARKET_UNDERDOG': True},
+            {'GAME_ID': '2', 'GAME_DATE': '2026-11-01', 'HOME_ABBR': 'NYK', 'ACTUAL_MARGIN': 3,
+             'PICK_TEAM': 'MIA', 'PICK_SIDE': 'NO', 'PICK_P': 0.60, 'PICK_MID': 0.62, 'PICK_FILL': 0.63,
+             'PICK_MARKET_UNDERDOG': False}]
+    t = pl.paper_trades(pd.DataFrame(rows))
+    assert list(t['won']) == [True, False]
+    s = pl.paper_summary(t)
+    assert set(s.index) == {'pick: market underdog', 'pick: market favorite', 'pick the winner (all)'}
+    assert s.loc['pick the winner (all)', 'leans'] == 2

@@ -182,34 +182,17 @@ def elo_tuning():
     return results
 
 
-def margin_model(alpha=1.0, sigma_holdout=0.2):
+def margin_model(sigma_holdout=0.2):
     """
-    Ridge regression on point margin, converted to P(home win) = Phi(margin / sigma).
-    sigma is fit by log loss on the last `sigma_holdout` of the training games, using a
-    regression fit on the earlier training games; the regression is then refit on all of them.
+    Phase 5.2: the spread model (spread_model.py: Ridge on the home margin, sigma from the end of
+    the training games) turned into P(home win) = P(margin > 0).
     """
-    import numpy as np
-    from scipy.optimize import minimize_scalar
-    from scipy.stats import norm
-    from sklearn.linear_model import Ridge
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
+    import spread_model
 
     def fit_predict(train, test):
-        make = lambda: make_pipeline(StandardScaler(), Ridge(alpha=alpha))
-        cut = int(len(train) * (1 - sigma_holdout))
-        early, late = train.iloc[:cut], train.iloc[cut:]
-        mu = make().fit(early[FEATURES], early['MARGIN']).predict(late[FEATURES])
-        y = late['TARGET'].values
-
-        def loss(sigma):
-            p = np.clip(norm.cdf(mu / sigma), 1e-6, 1 - 1e-6)
-            return -(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()
-
-        sigma = minimize_scalar(loss, bounds=(5, 30), method='bounded').x
-        fit_predict.sigmas.append(sigma)
-        reg = make().fit(train[FEATURES], train['MARGIN'])
-        return norm.cdf(reg.predict(test[FEATURES]) / sigma)
+        fitted = spread_model.fit_target(spread_model.TARGETS['spread'], train, sigma_holdout)
+        fit_predict.sigmas.append(fitted.sigma)
+        return fitted.prob_over(test, 0.0)
 
     fit_predict.sigmas = []
     return fit_predict
@@ -374,6 +357,126 @@ def darko_impact():
                     'DARKO replaces box impact': (df, replace),
                     'DARKO added as a second feature': (df, FEATURES + ['DARKO_INJURY_DIFF'])},
                    'Injury impact from DARKO DPM')
+
+
+# ------------------------------------------------------------------ Spread
+
+def _held_out_spreads():
+    """Walk-forward spread predictions written by train.py (margin, training-only sigma)."""
+    sp = pd.read_csv('data/test_spread_predictions.csv', parse_dates=['GAME_DATE'])
+    wp = pd.read_csv('data/test_predictions.csv')[['GAME_ID', 'MODEL_PROB']]
+    return sp.merge(wp, on='GAME_ID')
+
+
+@experiment
+def spread_calibration(offsets=(-12, -8, -4, 0, 4, 8, 12)):
+    """
+    Are cover probabilities calibrated? For each held-out game, lines at the predicted margin
+    plus each offset (.5 lines), P(margin > line) from the fold's training-only sigma, against
+    how often the margin actually cleared the line.
+    """
+    import numpy as np
+    from scipy.stats import norm
+    sp = _held_out_spreads()
+    rows = []
+    for d in offsets:
+        line = np.round(sp['MODEL_MARGIN']) + d + 0.5
+        p = 1 - norm.cdf((line - sp['MODEL_MARGIN']) / sp['SIGMA'])
+        rows.append(pd.DataFrame({'p': p, 'hit': (sp['MARGIN'] > line).astype(int)}))
+    r = pd.concat(rows, ignore_index=True)
+    r['bucket'] = pd.cut(r['p'], [0, .2, .3, .4, .45, .55, .6, .7, .8, 1.0], include_lowest=True)
+    table = r.groupby('bucket', observed=True).agg(n=('hit', 'size'), predicted=('p', 'mean'), actual=('hit', 'mean'))
+    print(f"Fold sigmas (training games only): {sorted(sp['SIGMA'].round(2).unique())}")
+    print(f"Held-out residual SD: {np.std(sp['MARGIN'] - sp['MODEL_MARGIN']):.2f} pts")
+    print(table.to_string(float_format=lambda v: f"{v:.3f}"))
+    # sharpness check at the one place it matters most: the model's own coin-flip line
+    return table
+
+
+def _paper_trades(min_edge=None):
+    """Backtest the decision rules on held-out games with Kalshi prices (local data only)."""
+    import numpy as np
+    import decisions as D
+    min_edge = D.MIN_EDGE_PTS if min_edge is None else min_edge
+    sp = _held_out_spreads()
+    sp['GID'] = sp['GAME_ID'].astype(str).str.zfill(10)
+    ml = pd.read_csv('data/market_history.csv', dtype={'GAME_ID': str}).set_index('GAME_ID')
+    sh = pd.read_csv('data/market_spread_history.csv', dtype={'GAME_ID': str}).set_index('GAME_ID')
+    games = pd.read_csv('data/raw_nba_data.csv', dtype={'GAME_ID': str})
+    home = games[games['MATCHUP'].str.contains('vs.', regex=False)].copy()
+    home['GID'] = home['GAME_ID'].str.zfill(10)
+    away = games[games['MATCHUP'].str.contains('@', regex=False)].copy()
+    away['GID'] = away['GAME_ID'].str.zfill(10)
+    abbr = dict(zip(home['GID'], home['TEAM_ABBREVIATION']))
+    away_abbr = dict(zip(away['GID'], away['TEAM_ABBREVIATION']))
+    trades = []
+    for r in sp.itertuples():
+        if r.GID not in ml.index:
+            continue
+        m = ml.loc[r.GID]
+        info = sh.loc[r.GID].to_dict() if r.GID in sh.index else None
+        if info is not None and not (info.get('MAIN_STRIKE') == info.get('MAIN_STRIKE')):
+            info = None
+        g = {'HOME_ABBR': abbr[r.GID], 'AWAY_ABBR': away_abbr[r.GID], 'MODEL_HOME_PROB': r.MODEL_PROB,
+             'MARKET_YES_BID': m['HOME_YES_BID'], 'MARKET_YES_ASK': m['HOME_YES_ASK'],
+             'MODEL_HOME_MARGIN': r.MODEL_MARGIN, 'SPREAD_SIGMA': r.SIGMA, 'MARKET_SPREAD_INFO': info}
+        d = D.game_decisions(g, min_edge)
+        pk = d['pick']
+        if pk:
+            won = (r.MARGIN > 0) == (pk['side'] == 'YES')
+            trades.append({'GAME_ID': r.GID, 'GAME_DATE': r.GAME_DATE,
+                           'market': 'pick: market underdog' if pk['market_underdog'] else 'pick: market favorite',
+                           'lean': True, 'edge_pts': pk['edge_pts'], 'p_side': pk['p_side'], 'mid': pk['mid'],
+                           'fill': pk['fill'], 'won': bool(won), 'pnl': D.settle('X', pk['fill'], won)})
+        for market in ('moneyline', 'spread'):
+            x = d[market]
+            if not x or x.get('mid') is None:
+                continue
+            if market == 'moneyline':
+                won = (r.MARGIN > 0) == (x['best_side'] == 'YES')
+            else:
+                fav_margin = r.MARGIN if x['fav'] == g['HOME_ABBR'] else -r.MARGIN
+                won = (fav_margin > x['strike']) == (x['best_side'] == 'YES')
+            trades.append({'GAME_ID': r.GID, 'GAME_DATE': r.GAME_DATE, 'market': market, 'lean': x['side'] is not None,
+                           'edge_pts': x['edge_pts'], 'p_side': x['p_side'], 'mid': x['mid'], 'fill': x['fill'],
+                           'won': bool(won), 'pnl': D.settle('X', x['fill'], won)})
+    return pd.DataFrame(trades)
+
+
+@experiment
+def paper_trades(report_path='data/market_report.md'):
+    """
+    Decision rules on held-out 2025-26 games with Kalshi prices. Uses Kalshi data, so the detailed
+    report is written to a git-ignored local file only.
+    """
+    import numpy as np
+    t = _paper_trades()
+    lines = ['# Paper-trade backtest (local only: uses Kalshi prices)', '',
+             'Hypothetical analysis, not betting advice. Fills at the ask plus fee; $1 contracts.', '']
+    for market, g in t.groupby('market'):
+        leans = g[g['lean']]
+        lines.append(f"## {market}")
+        lines.append(f"- games with a price: {len(g)}; leans (edge >= threshold): {len(leans)}")
+        if len(leans):
+            lines.append(f"- win rate {leans['won'].mean():.1%} vs average price paid {leans['fill'].mean():.3f}")
+            lines.append(f"- total P/L ${leans['pnl'].sum():+.2f}, per trade ${leans['pnl'].mean():+.3f} "
+                         f"(SE {leans['pnl'].std(ddof=1) / np.sqrt(len(leans)):.3f})")
+            cal = leans.assign(b=pd.cut(leans['p_side'], [0, .4, .5, .6, .7, 1])).groupby('b', observed=True).agg(
+                n=('won', 'size'), model_p=('p_side', 'mean'), actual=('won', 'mean'), price=('mid', 'mean'))
+            lines.append('- calibration of the model on leans:\n\n```\n'
+                         + cal.to_string(float_format=lambda v: f"{v:.3f}") + '\n```')
+        # all priced sides, edge buckets: is a bigger edge followed by better results?
+        g = g.assign(eb=pd.cut(g['edge_pts'], [-100, -5, 0, 5, 10, 100]))
+        eb = g.groupby('eb', observed=True).agg(n=('won', 'size'), win=('won', 'mean'), price=('mid', 'mean'),
+                                                pnl=('pnl', 'mean'))
+        lines.append('\n- every priced game by edge bucket (best side):\n\n```\n'
+                     + eb.to_string(float_format=lambda v: f"{v:.3f}") + '\n```')
+        lines.append('')
+    text = '\n'.join(lines)
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(text)
+    print(text)
+    return t
 
 
 # replacement_boosts and minutes_weighting were tested here and their switches removed after

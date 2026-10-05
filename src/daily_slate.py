@@ -13,6 +13,79 @@ GAP_HIGHLIGHT = 0.05   # model vs market gaps this large (5 points) are highligh
 REGULAR_SEASON, PLAYOFFS = '002', '004'
 
 
+def market_spreads(game_date, snapshot=True):
+    """{(home abbr, away abbr): market spread info} from Kalshi's spread ladders (local snapshot)."""
+    import market_odds
+    try:
+        if snapshot:
+            ladders = market_odds.spread_snapshot(game_date)
+        else:
+            day = pd.Timestamp(game_date)
+            frames = []
+            for ev in market_odds.open_spread_events():
+                d, away, home = market_odds.parse_event_ticker(ev['event_ticker'])
+                if d == day:
+                    frames.append(market_odds._ladder_rows(ev.get('markets', [])).assign(HOME=home, AWAY=away))
+            ladders = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    except Exception as e:
+        print(f"[!] Kalshi spread markets unavailable: {type(e).__name__}: {e}")
+        return {}
+    out = {}
+    if ladders is None or ladders.empty:
+        return out
+    for (home, away), lad in ladders.groupby(['HOME', 'AWAY']):
+        info = market_odds.market_spread_from_ladder(lad, home, away)
+        if info:
+            out[(home, away)] = info
+    return out
+
+
+def spread_fields(res, market_spread, home_abbr, away_abbr):
+    """Model spread (home line, betting convention), market line, and the toss-up flag."""
+    import spread_model
+    margin = res.get('home_margin')
+    market_text = (None if not market_spread else
+                   spread_model.format_spread(-market_spread['HOME_LINE'], home_abbr, away_abbr))
+    base = {'HOME_ABBR': home_abbr, 'AWAY_ABBR': away_abbr, 'MARKET_SPREAD_TEXT': market_text}
+    if margin is None:
+        return {**base, 'MODEL_HOME_MARGIN': None, 'SPREAD': None, 'SPREAD_TEXT': None, 'SPREAD_SIGMA': None,
+                'MARKET_SPREAD': None, 'MARKET_SPREAD_INFO': market_spread, 'TOSS_UP': False}
+    return {**base, 'MODEL_HOME_MARGIN': margin, 'SPREAD': float(spread_model.home_spread(margin)),
+            'SPREAD_TEXT': spread_model.format_spread(margin, home_abbr, away_abbr),
+            'SPREAD_SIGMA': res.get('spread_sigma'),
+            'MARKET_SPREAD': None if not market_spread else market_spread['HOME_LINE'],
+            'MARKET_SPREAD_INFO': market_spread,
+            # win probability and spread pick different favorites: essentially a toss-up
+            'TOSS_UP': (res['home_prob'] > 0.5) != (margin > 0)}
+
+
+def _utc_to_et(ts):
+    return pd.Timestamp(ts).tz_localize('UTC').tz_convert('America/New_York').tz_localize(None)
+
+
+def decision_fields(row, report_time=None):
+    """Hypothetical decisions (decisions.py) for one slate row, flattened for the log."""
+    import decisions as D
+    d = D.game_decisions(row)
+    warnings = list(d['warnings'])
+    if report_time is not None and row.get('MARKET_TIME_ET') is not None and report_time > row['MARKET_TIME_ET']:
+        warnings.append('Injury report updated after the market price was taken: check late news first')
+    out = {'DECISIONS': d, 'FLAGS': d['flags'], 'WARNINGS': warnings, 'MIN_EDGE_PTS': D.MIN_EDGE_PTS}
+    for key, prefix in (('moneyline', 'ML'), ('spread', 'SPREAD')):
+        x = d[key] or {}
+        out.update({f'{prefix}_DECISION': x.get('label'), f'{prefix}_SIDE': x.get('side'),
+                    f'{prefix}_P': x.get('p_side'), f'{prefix}_MID': x.get('mid'), f'{prefix}_FILL': x.get('fill'),
+                    f'{prefix}_EDGE_PTS': x.get('edge_pts'), f'{prefix}_EV': x.get('ev')})
+    pick = d['pick'] or {}
+    out.update({'PICK_TEAM': pick.get('team'), 'PICK_SIDE': pick.get('side'), 'PICK_P': pick.get('p_side'),
+                'PICK_MID': pick.get('mid'), 'PICK_FILL': pick.get('fill'),
+                'PICK_MARKET_UNDERDOG': pick.get('market_underdog')})
+    out['ML_TEAM'] = (d['moneyline'] or {}).get('team')
+    out['SPREAD_FAV'] = (d['spread'] or {}).get('fav')
+    out['SPREAD_STRIKE'] = (d['spread'] or {}).get('strike')
+    return out
+
+
 def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
     """
     One row per regular-season or playoff game on `game_date` (default today, Eastern):
@@ -42,9 +115,13 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
     except Exception as e:  # Kalshi down: show the model alone
         print(f"[!] Kalshi unavailable: {type(e).__name__}: {e}")
         market = pd.DataFrame()
+    spreads = market_spreads(game_date, snapshot)
+    abbr = {name: code for code, name in market_odds.team_names().items()}
 
     now_et = pd.Timestamp.now(tz=ET).tz_localize(None)
     version = prediction_log.model_version()
+    report_time = (None if predictor.report is None else
+                   pd.Timestamp(predictor.report['REPORT_TIME'].max()))
     rows, to_log = [], []
     for g in sched.itertuples():
         try:
@@ -64,6 +141,10 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
                'FEATURES': res['features'].iloc[0].to_dict(),
                'HOME_DETAILS': res['home_details'], 'AWAY_DETAILS': res['away_details']}
         row['GAP'] = None if pd.isna(market_prob) else res['home_prob'] - market_prob
+        row.update(spread_fields(res, spreads.get((abbr.get(g.HOME_TEAM), abbr.get(g.AWAY_TEAM))),
+                                 abbr.get(g.HOME_TEAM, g.HOME_TEAM[:3]), abbr.get(g.AWAY_TEAM, g.AWAY_TEAM[:3])))
+        row['MARKET_TIME_ET'] = None if m is None else _utc_to_et(m['SNAPSHOT_TIME_UTC'])
+        row.update(decision_fields(row, report_time))
         rows.append(row)
         pregame = g.STATUS == 'scheduled' and (pd.isna(g.TIP_TIME_ET) or now_et < g.TIP_TIME_ET)
         if log and pregame:
@@ -104,9 +185,21 @@ def print_slate(slate):
         tip = '' if pd.isna(r.TIP_TIME_ET) else f"{pd.Timestamp(r.TIP_TIME_ET):%I:%M %p}"
         print(f"{tip:>8}  {r.AWAY_TEAM:>24} @ {r.HOME_TEAM:<24} model {r.MODEL_HOME_PROB:6.1%}  "
               f"market {market}  {gap}")
+        if r.SPREAD_TEXT:
+            print(f"{'':>10}spread: model {r.SPREAD_TEXT:<10} market {r.MARKET_SPREAD_TEXT or 'n/a'}"
+                  + ("   (win probability and spread disagree: close to a toss-up)" if r.TOSS_UP else ''))
+        for label, dec, edge in [('moneyline', r.ML_DECISION, r.ML_EDGE_PTS),
+                                 ('spread', r.SPREAD_DECISION, r.SPREAD_EDGE_PTS)]:
+            if dec:
+                print(f"{'':>10}{label}: {dec}" + ('' if edge is None or pd.isna(edge) else f" ({edge:+.1f} pts after fees)"))
+        for note in list(r.FLAGS or []) + list(r.WARNINGS or []):
+            print(f"{'':>10}! {note}")
     print("\nProbabilities are for the home team. Gaps under ~5 points are within Kalshi's fees "
           "and normal model error; even larger gaps are often the market knowing something the "
           "model doesn't (late scratches, rest).")
+    import decisions
+    print(f"Leans need an edge of at least {decisions.MIN_EDGE_PTS:g} points after Kalshi fees. "
+          f"{decisions.DISCLAIMER} Paper trades only; no orders are placed.")
 
 
 if __name__ == "__main__":

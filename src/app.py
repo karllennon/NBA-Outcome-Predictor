@@ -11,6 +11,7 @@ import streamlit as st
 sys.path.append(os.path.dirname(__file__))
 
 import dashboard_data as dd
+import decisions
 import ui
 from inference import GamePredictor
 from matchups import FEATURES
@@ -176,6 +177,12 @@ def matchup_card(g, games):
     ui.html_block(ui.card('Game matchup', body))
 
 
+def dd_result_text(g):
+    """'CHA by 27' from a finished game's score."""
+    m = g['HOME_PTS'] - g['AWAY_PTS']
+    return f"{g['HOME_ABBR'] if m > 0 else g['AWAY_ABBR']} by {abs(m)}"
+
+
 def probability_card(g):
     p, m = g['MODEL_HOME_PROB'], g.get('MARKET_HOME_PROB')
     has_m = m is not None and not pd.isna(m)
@@ -195,6 +202,22 @@ def probability_card(g):
         <div class="cv-prob-val">{gap if has_m else 'n/a'}<span class="sub">{'pts' if has_m else ''}</span></div>
         <div style="margin-top:4px">{gap_pill(p, m)}</div></div>
     </div>{split}"""
+    if g.get('SPREAD_TEXT'):
+        actual = ''
+        if g.get('HOME_PTS') is not None:
+            actual = (f'<div class="cv-prob-cell"><div class="cv-prob-label">Actual result</div>'
+                      f'<div class="cv-prob-val">{ui.esc(dd_result_text(g))}</div></div>')
+        cells += f"""
+    <div class="cv-prob-grid" style="margin-top:10px">
+      <div class="cv-prob-cell"><div class="cv-prob-label">Model spread</div>
+        <div class="cv-prob-val" style="color:#8fbcf3">{ui.esc(g['SPREAD_TEXT'])}</div></div>
+      <div class="cv-prob-cell"><div class="cv-prob-label">Kalshi spread</div>
+        <div class="cv-prob-val" style="color:#f19a75">{ui.esc(g.get('MARKET_SPREAD_TEXT') or 'n/a')}</div></div>
+      {actual}
+    </div>"""
+        if g.get('TOSS_UP'):
+            cells += ('<div class="cv-small" style="margin-top:8px">⚠ The win probability and the spread pick '
+                      'different favorites: this game is close to a toss-up.</div>')
     sub = f"Model favors {fav}"
     if g.get('HOME_WIN') is not None:
         winner = g['HOME_ABBR'] if g['HOME_WIN'] else g['AWAY_ABBR']
@@ -314,11 +337,14 @@ def markets_card(games_today, selected_id, mode):
             f'<tr{cls}><td class="cv-game">{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> {ui.badge(g["HOME_ABBR"], "sm")}</td>'
             f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.pct(p)}</td>'
             f'<td class="num" style="color:#f19a75;font-weight:700">{ui.pct(m) if has_m else "n/a"}</td>'
-            f'<td>{gap_pill(p, m)}</td>{result}</tr>')
+            f'<td>{gap_pill(p, m)}</td>'
+            f'<td class="cv-small" style="white-space:nowrap">{ui.esc(g.get("SPREAD_TEXT") or "–")}'
+            f'{" · " + ui.esc(g["MARKET_SPREAD_TEXT"]) if g.get("MARKET_SPREAD_TEXT") else ""}'
+            f'{" ⚠" if g.get("TOSS_UP") else ""}</td>{result}</tr>')
     head = ('<tr><th>Game</th><th class="num">Model</th><th class="num">Kalshi</th><th>Gap</th>'
-            + ('<th>Model pick</th>' if mode == 'replay' else '') + '</tr>')
+            '<th>Spread · Kalshi</th>' + ('<th>Model pick</th>' if mode == 'replay' else '') + '</tr>')
     body = f'<table class="cv-table">{head}{"".join(rows)}</table>' \
-           f'<div class="cv-small" style="margin-top:8px">Home-team win probability. Kalshi = midpoint of the ' \
+           f'<div class="cv-small" style="margin-top:8px">Home-team win probability; spreads favorite first '            f'(⚠ = win probability and spread disagree, close to a toss-up). Kalshi = midpoint of the ' \
            f'YES bid/ask on its NBA game market (the prices behind PrizePicks game picks). Gaps under 5 points ' \
            f'are within fees and noise; on past games the market was more accurate than the model.</div>'
     ui.html_block(ui.card('Game markets · Kalshi', body, sub=f'{len(games_today)} games'))
@@ -372,6 +398,114 @@ def upcoming_card(mode, current_date, all_dates):
         f'<td class="cv-game">{ui.badge(abbr.get(r["AWAY_TEAM"], "?"), "sm")} <span class="cv-small">@</span> {ui.badge(abbr.get(r["HOME_TEAM"], "?"), "sm")}</td>'
         f'<td class="cv-small">{fmt_tip(r.get("TIP_TIME_ET"))}</td></tr>' for r in up[:8])
     ui.html_block(ui.card('Coming up', f'<table class="cv-table">{rows}</table>'))
+
+
+# ─────────────────────────────────────────────────────────────── decision cards
+
+def _badge(d):
+    """Green lean badge or gray no-play badge, always with the edge."""
+    if not d or d.get('mid') is None:
+        return ui.pill('NO PRICE', 'neutral')
+    e = d['edge_pts']
+    edge = f"{e:+.0f} pts" if abs(e) >= 10 else (f"{e:+.1f} pts" if abs(e) >= 0.05 else "0 pts")
+    if d.get('side'):
+        return ui.pill(f"{d['label']} · {edge}", 'lean')
+    return ui.pill(f"No play · {edge}", 'neutral')
+
+
+def _market_row(name, g, d, market):
+    if not d or d.get('mid') is None:
+        line = '<span class="sub">no usable Kalshi price</span>'
+    elif market == 'spread':
+        line = (f"{ui.esc(d['line_text'])}<br><span class='sub'>model {d['p_fav_covers']:.0%} for "
+                f"{ui.esc(d['fav'])} -{d['strike']:g}</span>")
+    else:
+        line = (f"{ui.esc(d['team'])} {d['mid'] * 100:.0f}¢"
+                f"<br><span class='sub'>model {d['p_side']:.0%} for {ui.esc(d['team'])}</span>")
+    reason = '' if not d or d.get('mid') is None else \
+        f'<div class="cv-dec-reason">{ui.esc(decisions.reason(g, d, market))}</div>'
+    return (f'<div class="cv-dec-row"><span class="cv-dec-mkt">{name}</span>'
+            f'<span class="cv-dec-line">{line}</span>{_badge(d)}</div>{reason}')
+
+
+def _outcome(g, d, market):
+    """Replay only: did the lean win?"""
+    if g.get('HOME_PTS') is None or not d or not d.get('side'):
+        return ''
+    margin = g['HOME_PTS'] - g['AWAY_PTS']
+    if market == 'moneyline':
+        won = (margin > 0) == (d['side'] == 'YES')
+    else:
+        fav_margin = margin if d['fav'] == g['HOME_ABBR'] else -margin
+        won = (fav_margin > d['strike']) == (d['side'] == 'YES')
+    return ui.pill(f"{market} lean {'won' if won else 'lost'}", 'good' if won else 'crit')
+
+
+def _pick_row(g, pick):
+    """'Pick the winner' paper trade line (every priced game, no edge filter)."""
+    if not pick:
+        return ''
+    tag = ui.pill('model picks the market underdog', 'warn') if pick['market_underdog'] else ''
+    result = ''
+    if g.get('HOME_PTS') is not None:
+        won = ((g['HOME_PTS'] > g['AWAY_PTS']) == (pick['side'] == 'YES'))
+        result = ' ' + ui.pill('won' if won else 'lost', 'good' if won else 'crit')
+    return (f'<div class="cv-dec-row"><span class="cv-dec-mkt">Pick</span>'
+            f'<span class="cv-dec-line">{ui.esc(pick["team"])} at {pick["fill"] * 100:.0f}¢ (paper $1)'
+            f'<br><span class="sub">model {pick["p_side"]:.0%} to win · every game, no edge filter</span></span>'
+            f'<span>{tag}{result}</span></div>')
+
+
+def decision_card(g, d):
+    lean = any(x and x.get('side') for x in (d['moneyline'], d['spread']))
+    tip = fmt_tip(g.get('TIP_TIME_ET'))
+    model_txt = (f"Model: <b>{ui.esc(g.get('SPREAD_TEXT') or '–')}</b> · "
+                 f"{ui.esc(g['HOME_ABBR'] if g['MODEL_HOME_PROB'] >= 0.5 else g['AWAY_ABBR'])} "
+                 f"<b>{max(g['MODEL_HOME_PROB'], 1 - g['MODEL_HOME_PROB']):.0%}</b> to win")
+    score = ''
+    if g.get('HOME_PTS') is not None:
+        score = f" · final {g['AWAY_PTS']}–{g['HOME_PTS']}"
+    notes = list(d['flags']) + list(d['warnings']) + list(g.get('WARNINGS') or [])
+    if g.get('TOSS_UP'):
+        notes.append('Win probability and spread pick different favorites: close to a toss-up')
+    notes_html = ''.join(f'<div class="cv-dec-note">⚠ {ui.esc(n)}</div>' for n in dict.fromkeys(notes))
+    outcomes = ' '.join(x for x in (_outcome(g, d['spread'], 'spread'), _outcome(g, d['moneyline'], 'moneyline')) if x)
+    return (f'<div class="cv-dec {"lean" if lean else ""}">'
+            f'<div class="cv-dec-head"><div>{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> '
+            f'{ui.badge(g["HOME_ABBR"], "sm")}<div class="cv-small" style="margin-top:4px">{ui.esc(tip + " ET" if tip else "")}'
+            f'{ui.esc(score)}</div></div><div class="cv-dec-model">{model_txt}</div></div>'
+            f'{_market_row("Spread", g, d["spread"], "spread")}'
+            f'{_market_row("Moneyline", g, d["moneyline"], "moneyline")}'
+            f'{_pick_row(g, d["pick"])}'
+            f'{notes_html}'
+            f'{"<div style=" + chr(39) + "margin-top:6px" + chr(39) + ">" + outcomes + "</div>" if outcomes else ""}'
+            f'<div class="cv-dec-foot">{ui.esc(decisions.DISCLAIMER)} Leans need {decisions.MIN_EDGE_PTS:g}+ pts '
+            f'after Kalshi fees.</div></div>')
+
+
+def decision_section(games_today, key):
+    """Prominent per-game decision cards with the 'only leans' filter."""
+    rows = []
+    for g in games_today:
+        d = decisions.game_decisions(g)
+        best = max([x['edge_pts'] for x in (d['moneyline'], d['spread']) if x and x.get('side')] or [None],
+                   key=lambda v: -1e9 if v is None else v)
+        rows.append((g, d, best))
+    n_leans = sum(1 for _, _, b in rows if b is not None)
+    head_l, head_r = st.columns([3, 1.4], vertical_alignment='center')
+    with head_l:
+        ui.html_block(f'<div class="cv-title" style="margin:4px 0 6px 0"><span>Decisions · spread and moneyline</span>'
+                      f'<span class="cv-sub">{n_leans} of {len(rows)} games with a lean · '
+                      f'{ui.esc(decisions.DISCLAIMER)}</span></div>')
+    with head_r:
+        only = st.toggle('Only games with a lean, largest edge first', key=f'only-leans-{key}')
+    if only:
+        rows = sorted([r for r in rows if r[2] is not None], key=lambda r: -r[2])
+        if not rows:
+            ui.html_block(ui.card('No leans', f'<div class="cv-muted">No game clears the {decisions.MIN_EDGE_PTS:g}-point '
+                                               'edge threshold after fees.</div>'))
+            return
+    ui.html_block('<div class="cv-dec-grid">' + ''.join(decision_card(g, d) for g, d, _ in rows) + '</div>')
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -495,6 +629,8 @@ def page_dashboard():
         upcoming_card('Live', None, date_list)
         return
 
+    decision_section(games_today, 'dash')
+
     ids = [g['GAME_ID'] for g in games_today]
     if st.session_state.get('game') not in ids:
         st.session_state['game'] = ids[0]
@@ -536,8 +672,26 @@ def page_markets():
     ui.html_block('<div class="cv-header"><div><div class="cv-brand">Markets</div>'
                   '<div class="cv-date">Model vs Kalshi</div>'
                   '<div class="cv-mode">Held-out games from the walk-forward test, with Kalshi\'s price at tip-off</div></div></div>')
+    # Decisions for the day the Dashboard is showing (live games, else the chosen replay day)
+    try:
+        live = live_view()
+    except Exception:
+        live = []
+    if live and st.session_state.get('mode', 'Live') == 'Live':
+        day_games, day_label = live, 'today'
+    else:
+        dates = list(replay_dates().index)
+        day = st.session_state.get('replay_day', dates[-1] if dates else None)
+        day_games = replay_view(str(pd.Timestamp(day).date())) if day is not None else []
+        day_label = f"replay · {pd.Timestamp(day):%b %d, %Y}" if day is not None else ''
+    if day_games:
+        st.caption(f"Decisions for {day_label} (change the day on the Dashboard).")
+        decision_section(day_games, 'markets')
     metric_tiles()
     preds = load_test_predictions()
+    if not os.path.exists('data/market_history.csv'):
+        st.info("Run `python src/market_odds.py --history` and `python src/train.py` first (Kalshi data stays local).")
+        return
     market = pd.read_csv('data/market_history.csv', dtype={'GAME_ID': str})
     market['GAME_ID'] = market['GAME_ID'].astype(int)
     d = preds.merge(market[['GAME_ID', 'MARKET_HOME_PROB']], on='GAME_ID').dropna(subset=['MARKET_HOME_PROB'])
@@ -678,6 +832,53 @@ def page_track_record():
         fig.update_xaxes(title_text='Games')
         ui.plotly_layout(fig, height=300)
         st.plotly_chart(fig, use_container_width=True, config=ui.PLOTLY_CONFIG)
+    sa = prediction_log.spread_accuracy(record)
+    if sa:
+        rows = (f'<tr><td>Games with a logged spread</td><td class="num">{sa["games"]}</td></tr>'
+                f'<tr><td>Mean absolute error of the predicted margin</td><td class="num">{sa["mae"]:.1f} pts</td></tr>')
+        if sa.get('vs_line_games'):
+            rows += (f'<tr><td>Actual margin landed on the side of the market line the model predicted</td>'
+                     f'<td class="num">{sa["right_side_of_line"]:.1%} of {sa["vs_line_games"]}</td></tr>')
+        ui.html_block(ui.card('Spread accuracy', f'<table class="cv-table">{rows}</table>'
+                              '<div class="cv-small" style="margin-top:8px">About 52-53% on the right side of '
+                              'the line is roughly break-even after fees; a few hundred games are needed before '
+                              'this means much.</div>'))
+    trades = prediction_log.paper_trades(record)
+    summary = prediction_log.paper_summary(trades)
+    body = ('<div class="cv-small" style="margin-bottom:8px"><b>Hypothetical $1 paper trades, not real bets</b> '
+            '(no orders are ever placed). Each lean is recorded before tip-off at the ask price plus the Kalshi fee. '
+            'Under a few hundred trades, these results prove very little either way.</div>')
+    if summary.empty:
+        body += '<div class="cv-muted">No settled leans yet.</div>'
+    else:
+        rows = ''.join(
+            f'<tr><td>{ui.esc(mk.capitalize())}</td><td class="num">{int(r.leans)}</td>'
+            f'<td class="num">{r.win_rate:.1%}</td><td class="num">{r.avg_price * 100:.0f}¢</td>'
+            f'<td class="num">{r.avg_model_p:.0%}</td><td class="num">${r.total_pnl:+.2f}</td>'
+            f'<td class="num">${r.per_trade:+.3f}</td></tr>' for mk, r in summary.iterrows())
+        body += ('<table class="cv-table"><tr><th>Market</th><th class="num">Trades</th><th class="num">Won</th>'
+                 '<th class="num">Avg price paid</th><th class="num">Model chance</th>'
+                 '<th class="num">Total P/L</th><th class="num">Per trade</th></tr>' + rows + '</table>'
+                 '<div class="cv-small" style="margin-top:8px">A lean is worth it only if it wins more often than '
+                 'the average price paid (plus fees). "Model chance" vs "Won" is the calibration check.</div>')
+    ui.html_block(ui.card('Paper trades (hypothetical)', body, sub=decisions.DISCLAIMER))
+    if len(trades):
+        with st.container(key='card-paper-cal'):
+            ui.card_title('Calibration of leans', 'model chance vs how often the lean won')
+            cal = trades.assign(b=pd.cut(trades['p'], [0, .5, .6, .7, .8, 1.0])).groupby(['market', 'b'], observed=True)                 .agg(n=('won', 'size'), p=('p', 'mean'), won=('won', 'mean')).reset_index()
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode='lines', line=dict(color='rgba(147,160,184,0.45)', dash='dot', width=1),
+                                     hoverinfo='skip', name='Perfect'))
+            for mk, color in [('moneyline', ui.MODEL), ('spread', ui.MARKET)]:
+                c = cal[cal['market'] == mk]
+                if len(c):
+                    fig.add_trace(go.Scatter(x=c['p'] * 100, y=c['won'] * 100, mode='lines+markers', name=mk.capitalize(),
+                                             line=dict(color=color, width=2), marker=dict(size=9), customdata=c['n'],
+                                             hovertemplate='model %{x:.0f}% · won %{y:.0f}%<br>%{customdata} leans<extra></extra>'))
+            fig.update_xaxes(range=[40, 100], ticksuffix='%')
+            fig.update_yaxes(range=[0, 100], ticksuffix='%')
+            ui.plotly_layout(fig, height=260)
+            st.plotly_chart(fig, use_container_width=True, config=ui.PLOTLY_CONFIG)
     if len(record) < 100:
         st.caption(f"Only {len(record)} games so far: these numbers will move a lot until a few hundred are in.")
 
@@ -771,7 +972,7 @@ def page_model():
 
 sidebar()
 pages = [
-    st.Page(page_dashboard, title='Dashboard', icon=':material/sports_basketball:', url_path='dashboard', default=True),
+    st.Page(page_dashboard, title='Dashboard', icon=':material/sports_basketball:', default=True),
     st.Page(page_markets, title='Markets', icon=':material/show_chart:', url_path='markets'),
     st.Page(page_predictor, title='Predictor', icon=':material/tune:', url_path='predictor'),
     st.Page(page_track_record, title='Track Record', icon=':material/fact_check:', url_path='track-record'),
