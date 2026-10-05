@@ -1,0 +1,32 @@
+TEAM_ABBREVIATION,ARENA,LAT,LON,TZ,ELEVATION_M
+ATL,State Farm Arena,33.7573,-84.3963,America/New_York,320
+BOS,TD Garden,42.3662,-71.0621,America/New_York,5
+BKN,Barclays Center,40.6826,-73.9754,America/New_York,20
+CHA,Spectrum Center,35.2251,-80.8392,America/New_York,230
+CHI,United Center,41.8807,-87.6742,America/Chicago,180
+CLE,Rocket Arena,41.4965,-81.6882,America/New_York,200
+DAL,American Airlines Center,32.7905,-96.8103,America/Chicago,140
+DEN,Ball Arena,39.7487,-105.0077,America/Denver,1609
+DET,Little Caesars Arena,42.3410,-83.0550,America/Detroit,190
+GSW,Chase Center,37.7680,-122.3877,America/Los_Angeles,5
+HOU,Toyota Center,29.7508,-95.3621,America/Chicago,15
+IND,Gainbridge Fieldhouse,39.7640,-86.1555,America/Indiana/Indianapolis,220
+LAC,Intuit Dome,33.9447,-118.3410,America/Los_Angeles,30
+LAL,Crypto.com Arena,34.0430,-118.2673,America/Los_Angeles,80
+MEM,FedExForum,35.1382,-90.0506,America/Chicago,80
+MIA,Kaseya Center,25.7814,-80.1870,America/New_York,2
+MIL,Fiserv Forum,43.0451,-87.9172,America/Chicago,190
+MIN,Target Center,44.9795,-93.2761,America/Chicago,255
+NOP,Smoothie King Center,29.9490,-90.0821,America/Chicago,2
+NYK,Madison Square Garden,40.7505,-73.9934,America/New_York,10
+OKC,Paycom Center,35.4634,-97.5151,America/Chicago,365
+ORL,Kia Center,28.5392,-81.3839,America/New_York,30
+PHI,Wells Fargo Center,39.9012,-75.1720,America/New_York,5
+PHX,Footprint Center,33.4457,-112.0712,America/Phoenix,330
+POR,Moda Center,45.5316,-122.6668,America/Los_Angeles,15
+SAC,Golden 1 Center,38.5802,-121.4997,America/Los_Angeles,8
+SAS,Frost Bank Center,29.4270,-98.4375,America/Chicago,200
+TOR,Scotiabank Arena,43.6435,-79.3791,America/Toronto,80
+UTA,Delta Center,40.7683,-111.9011,America/Denver,1290
+WAS,Capital One Arena,38.8981,-77.0209,America/New_York,20
+BUBBLE,ESPN Wide World of Sports (2019-20 restart),28.3373,-81.5562,America/New_York,30

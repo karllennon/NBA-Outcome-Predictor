@@ -1,50 +1,107 @@
 import pandas as pd
-from elo import NBAEloCalculator
+from context import add_context, CONTEXT_COLUMNS
+from elo import NBAEloCalculator, is_neutral_site
 from features import NBAFeatureProcessor
+from injuries import InjuryModel
 from matchups import create_matchup_data
 
-def run_full_pipeline():
-    # 1. Load from cached CSVs (skip ingestion)
-    print("Loading cached data...")
-    raw_game_df = pd.read_csv('data/raw_nba_data.csv')
-    player_boxscores = pd.read_csv('data/raw_player_boxscores.csv')
-    
+# Settings for the shipped pipeline. experiments.py overrides these to test alternatives.
+# First season used for training (SEASON_ID 2YYYY = regular season starting in YYYY).
+FIRST_SEASON_ID = 22023
+# Elo settings tuned by log loss of Elo's own predictions (python src/experiments.py elo_tuning;
+# RESULTS.md, Phase 5). Re-tune after adding seasons.
+ELO_PARAMS = {'k_factor': 12.5, 'home_advantage': 50, 'season_carryover': 0.5}
+# Official injury reports: players listed Out on the last report before tip-off (falls back
+# to "missed the previous game" when no report covers the game). See RESULTS.md, Phase 2.
+INJURY_PARAMS = {"use_reports": True}
+
+
+def load_games(data_dir='data', first_season_id=None):
+    """Team game logs from FIRST_SEASON_ID on, with parsed dates."""
+    first_season_id = FIRST_SEASON_ID if first_season_id is None else first_season_id
+    games = pd.read_csv(f'{data_dir}/raw_nba_data.csv', parse_dates=['GAME_DATE'])
+    return games[games['SEASON_ID'] >= first_season_id].reset_index(drop=True)
+
+
+def load_raw(data_dir='data', first_season_id=None):
+    first_season_id = FIRST_SEASON_ID if first_season_id is None else first_season_id
+    raw_game_df = pd.read_csv(f'{data_dir}/raw_nba_data.csv')
+    raw_game_df = raw_game_df[raw_game_df['SEASON_ID'] >= first_season_id].reset_index(drop=True)
+    player_boxscores = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
+    player_boxscores = player_boxscores[player_boxscores['GAME_ID'].isin(set(raw_game_df['GAME_ID']))]
     raw_game_df['GAME_DATE'] = pd.to_datetime(raw_game_df['GAME_DATE'])
     player_boxscores['GAME_DATE'] = pd.to_datetime(player_boxscores['GAME_DATE'])
-    
-    print(f"Loaded {len(raw_game_df)} team games and {len(player_boxscores)} player rows.")
-    
-    # 2. Add Elo Ratings
-    print("Calculating Elo...")
-    elo_calc = NBAEloCalculator()
-    df_with_elo = elo_calc.process_season(raw_game_df)
-    
-    # 3. Process Features & Backfill Injuries
-    print("Engineering Features (This will take a few minutes)...")
-    processor = NBAFeatureProcessor(df_with_elo)
-    
-    # Run the backfill first to get CORE_INJURY_DIFF
-    positions_df = pd.read_csv('data/player_positions.csv')
-    df_with_injuries = processor.backfill_historical_injuries(df_with_elo, player_boxscores, positions_df)
+    return raw_game_df, player_boxscores
 
-    
-    # Update the processor's internal dataframe and run the rest
-    processor.df = df_with_injuries
-    processed_df = (processor.add_advanced_stats()
-                             .add_comprehensive_stats()
-                             .add_context_features()
-                             .add_rolling_momentum()
-                             .get_final_data())
-    
-    # 4. Create Matchups (The differentials)
-    print("Creating Matchup Differentials...")
-    final_data = create_matchup_data(processed_df)
-    
-    # 5. Save
+
+def load_injury_reports():
+    from injury_reports import load_archive
+    return load_archive()
+
+
+def build_dataset(raw_game_df, player_boxscores, elo_params=None,
+                  injury_params=None, reports=None, verbose=True, darko=None):
+    """
+    Returns (matchup training set, feature processor, Elo calculator).
+    Every feature for a game uses only games before it.
+    """
+    log = print if verbose else (lambda *a, **k: None)
+    elo_params = ELO_PARAMS if elo_params is None else elo_params
+    injury_params = INJURY_PARAMS if injury_params is None else injury_params
+
+    # Elo ratings (pre-game for features, post-game for live predictions)
+    log("Calculating Elo...")
+    elo_calc = NBAEloCalculator(**elo_params)
+    df_with_elo = elo_calc.process_season(raw_game_df)
+
+    # Injury impact for every team-game, using only data from before that game
+    injury_model = InjuryModel(player_boxscores, raw_game_df,
+                               reports=reports, darko=darko, **injury_params)
+    df_with_injuries = injury_model.backfill(df_with_elo, verbose=verbose)
+
+    # Team stats, rest, and rolling form
+    log("Engineering features...")
+    processor = NBAFeatureProcessor(df_with_injuries)
+    processor = (processor.add_advanced_stats()
+                          .add_comprehensive_stats()
+                          .add_context_features()
+                          .add_rolling_momentum())
+    processed_df = processor.get_final_data()
+
+    # Schedule, travel and opponent-adjusted form, from games before each one (context.py).
+    # Merged after get_final_data so missing values here never remove rows from the base set.
+    context = add_context(raw_game_df)[['GAME_ID', 'TEAM_ID'] + CONTEXT_COLUMNS]
+    processed_df = processed_df.merge(context, on=['GAME_ID', 'TEAM_ID'], how='left')
+
+    # One row per game with home-minus-away differentials. Neutral-site (bubble) games still
+    # feed Elo and rolling stats, but are not training rows: "home" meant nothing there.
+    log("Creating matchup differentials...")
+    matchups = create_matchup_data(processed_df)
+    matchups = matchups[~is_neutral_site(matchups['GAME_DATE'])].reset_index(drop=True)
+    return matchups, processor, elo_calc
+
+
+def run_full_pipeline():
+    print("Loading cached data...")
+    raw_game_df, player_boxscores = load_raw()
+    print(f"Loaded {len(raw_game_df)} team games and {len(player_boxscores)} player rows.")
+    reports = load_injury_reports() if INJURY_PARAMS.get('use_reports') else None
+
+    final_data, processor, elo_calc = build_dataset(raw_game_df, player_boxscores,
+                                                    reports=reports)
     final_data.to_csv('data/final_training_set.csv', index=False)
-    # Save this for the predict.py to look up latest stats
-    processed_df.to_csv('data/processed_data_with_elo.csv', index=False)
-    print(f"Pipeline Complete! Generated {len(final_data)} games.")
+
+    # Pre-game team form for every game (dashboard replay of past days)
+    cols = ['GAME_ID', 'TEAM_ID', 'TEAM_NAME', 'GAME_DATE', 'PRE_GAME_ELO', 'WIN_STREAK', 'DAYS_REST'] +            [c for c in processor.df.columns if c.startswith('ROLLING_')]
+    processor.df[cols].to_csv('data/team_game_features.csv', index=False)
+
+    # Live state for predict.py / app.py: form going into each team's NEXT game
+    state = processor.latest_team_state().merge(elo_calc.current_ratings(), on='TEAM_ID', how='left')
+    state.to_csv('data/team_state.csv', index=False)
+
+    print(f"Pipeline complete. Generated {len(final_data)} games "
+          f"({final_data['GAME_DATE'].min().date()} to {final_data['GAME_DATE'].max().date()}).")
+
 
 if __name__ == "__main__":
     run_full_pipeline()

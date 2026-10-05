@@ -1,57 +1,35 @@
 import pandas as pd
-import joblib
-from sklearn.metrics import accuracy_score, brier_score_loss
+from sklearn.metrics import roc_auc_score, accuracy_score, log_loss, brier_score_loss
+
+
+def calibration_table(y, p, bins=(0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0)):
+    """Predicted vs actual home win rate by probability bucket."""
+    df = pd.DataFrame({'y': y, 'p': p})
+    df['bucket'] = pd.cut(df['p'], bins=list(bins), include_lowest=True)
+    return (df.groupby('bucket', observed=True)
+              .agg(games=('y', 'size'), predicted=('p', 'mean'), actual=('y', 'mean')))
+
 
 def run_backtest():
-    # 1. Load the model and the final training set
-    model = joblib.load('models/nba_model.joblib')
-    df = pd.read_csv('data/final_training_set.csv')
-    
-    # 2. Split Features and Target
-    # This automatically includes CORE_INJURY_DIFF because it's in the CSV now
-    X = df.drop(columns=['TARGET'])
-    y_true = df['TARGET']
-    
-    # Safety check: Ensure X has the exact columns the model expects
-    # (Sometimes pandas adds an 'Unnamed: 0' index column when saving)
-    X = X.loc[:, ~X.columns.str.contains('^Unnamed')]
-    
-    # 3. Generate Predictions and Probabilities
-    probs = model.predict_proba(X)[:, 1]
-    preds = model.predict(X)
-    
-    # 4. Calculate Simulation Metrics
-    results = pd.DataFrame({
-        'Actual': y_true,
-        'Predicted': preds,
-        'Probability': probs
-    })
-    
-    # 5. Simulate a $10 Flat Betting Strategy
-    def calculate_profit(row):
-        bet_amount = 10
-        if row['Predicted'] == 1: # Model predicted Home Win
-            if row['Actual'] == 1:
-                return bet_amount * 0.91 # Win $9.10 (Standard -110 odds)
-            else:
-                return -bet_amount # Lose $10.00
-        return 0 
+    """
+    Scores ONLY the walk-forward held-out games saved by train.py; each was predicted
+    by a model trained only on earlier games.
+    No betting simulation: the data has no historical odds, and assuming -110 on every
+    home pick does not reflect moneyline prices, so any ROI from it would be misleading.
+    """
+    preds = pd.read_csv('data/test_predictions.csv', parse_dates=['GAME_DATE'])
+    y = preds['TARGET']
 
-    results['Profit'] = results.apply(calculate_profit, axis=1)
-    
-    # 6. Output Results
-    print("--- Backtest Results (Season to Date) ---")
-    print(f"Total Games Analyzed: {len(results)}")
-    print(f"Model Accuracy: {accuracy_score(y_true, preds):.2%}")
-    print(f"Total Profit/Loss: ${results['Profit'].sum():.2f}")
-    
-    # Calculate ROI based only on games where a bet was placed
-    total_invested = results[results['Predicted'] == 1].count()['Profit'] * 10
-    roi = (results['Profit'].sum() / total_invested) if total_invested > 0 else 0
-    print(f"Return on Investment (ROI): {roi:.2%}")
-    
-    # Brier Score: Measures how close probabilities are to the truth (Lower is better)
-    print(f"Brier Score: {brier_score_loss(y_true, probs):.4f}")
+    print(f"--- Backtest on {len(preds)} held-out games "
+          f"({preds['GAME_DATE'].min().date()} to {preds['GAME_DATE'].max().date()}) ---")
+    for name, col in [('Shipped', 'MODEL_PROB'), ('Elo only', 'ELO_PROB')]:
+        p = preds[col]
+        print(f"{name:9s} AUC {roc_auc_score(y, p):.4f} | accuracy {accuracy_score(y, p > 0.5):.2%} | "
+              f"log loss {log_loss(y, p):.4f} | Brier {brier_score_loss(y, p):.4f}")
+
+    print("\nCalibration (shipped model):")
+    print(calibration_table(y, preds['MODEL_PROB']).to_string(float_format=lambda v: f"{v:.3f}"))
+
 
 if __name__ == "__main__":
     run_backtest()

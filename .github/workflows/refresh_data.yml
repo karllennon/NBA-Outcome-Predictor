@@ -1,8 +1,13 @@
 name: Daily Data Refresh
 
+# stats.nba.com times out for GitHub-hosted runner IPs: every scheduled run from March to
+# May 2026 spent ~4 minutes waiting on timeouts, fetched nothing, and still showed success.
+# A test run on 2026-10-05 with fixed request headers timed out the same way (run 37254192221),
+# so the daily schedule is removed. Refresh with scripts/refresh.sh (or .bat) on your own
+# machine. This workflow is kept for manual runs (e.g. from a self-hosted runner) and fails
+# loudly when the fetch fails or no data changes, instead of passing silently.
+
 on:
-  schedule:
-    - cron: '0 11 * * *'  # 6am EST every day
   workflow_dispatch:
 
 jobs:
@@ -13,23 +18,34 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install nba_api pandas
+        run: pip install -r requirements.txt
 
-      - name: Run ingestion
-        run: python src/ingest.py
+      - name: Run ingestion (exits non-zero if any season fails)
+        run: python -u src/ingest.py
 
       - name: Commit fresh data
         run: |
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
           git add data/raw_nba_data.csv data/raw_player_boxscores.csv
-          git diff --staged --quiet || git commit -m "Auto refresh data $(date +'%Y-%m-%d')"
+          if git diff --staged --quiet; then
+            # Expected in the offseason; Nov-Mar there are games every day, so no change means
+            # the fetch returned stale data.
+            month=$(date +%-m)
+            if [ "$month" -ge 11 ] || [ "$month" -le 3 ]; then
+              echo "::error::No new games fetched during the NBA season. Data source may be blocked."
+              exit 1
+            fi
+            echo "::notice::No new games (offseason or season edge)."
+            exit 0
+          fi
+          git commit -m "Auto refresh data $(date +'%Y-%m-%d')"
           git push

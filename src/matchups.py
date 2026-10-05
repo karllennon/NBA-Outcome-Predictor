@@ -1,48 +1,76 @@
 import pandas as pd
 
+FEATURES = [
+    'ELO_DIFF', 'EFG_DIFF', 'TOV_PCT_DIFF', 'ORB_PCT_DIFF',
+    'FT_RATE_DIFF', 'WIN_STREAK_DIFF', 'REST_DIFF',
+    'B2B_DIFF', 'PLUS_MINUS_DIFF', 'PACE_DIFF',
+    'DEF_RATING_DIFF', 'CORE_INJURY_DIFF',
+    'TRAVEL_DIFF', 'TZ_SHIFT_DIFF',   # Phase 6: the only new feature group that helped
+]
+
+# Home-minus-away differentials built from each side's pre-game state
+DIFF_SOURCES = {
+    'EFG_DIFF': 'ROLLING_eFG_PCT',
+    'TOV_PCT_DIFF': 'ROLLING_TOV_PCT',
+    'ORB_PCT_DIFF': 'ROLLING_ORB_PCT',
+    'FT_RATE_DIFF': 'ROLLING_FT_RATE',
+    'WIN_STREAK_DIFF': 'WIN_STREAK',
+    'REST_DIFF': 'DAYS_REST',
+    'B2B_DIFF': 'IS_B2B',
+    'PLUS_MINUS_DIFF': 'ROLLING_PLUS_MINUS',
+    'PACE_DIFF': 'ROLLING_PACE',
+    'DEF_RATING_DIFF': 'ROLLING_DEF_RATING',
+}
+
+
+# Candidate features from context.py, tested one group at a time (experiments.py, Phase 6).
+# A group only joins FEATURES if it improves held-out log loss.
+CONTEXT_FEATURES = {
+    'TRAVEL_DIFF': 'TRAVEL_KM', 'TZ_SHIFT_DIFF': 'TZ_SHIFT',
+    'GAMES_LAST_4_DIFF': 'GAMES_LAST_4', 'GAMES_LAST_7_DIFF': 'GAMES_LAST_7',
+    'THREE_IN_FOUR_DIFF': 'THREE_IN_FOUR', 'ADJ_NET_DIFF': 'ADJ_NET_10',
+}
+
+
+def injury_diff(home_loss, away_loss):
+    """Positive = away team is missing more impact = home advantage."""
+    return (away_loss - home_loss) / 10
+
+
 def create_matchup_data(processed_df):
     """
-    Combines Home and Away rows into a single 'Game' row and calculates exact Four Factors.
+    Combines home and away rows into one row per game with home-minus-away differentials.
+    Keeps GAME_DATE as metadata so training can split chronologically (it is not a feature).
     """
-    # 1. Identify Home and Away rows
     home_df = processed_df[processed_df['MATCHUP'].str.contains('vs.')].copy()
     away_df = processed_df[processed_df['MATCHUP'].str.contains('@')].copy()
 
-    # 2. Merge the two sides on GAME_ID
-    matchups = pd.merge(
-        home_df, 
-        away_df, 
-        on='GAME_ID', 
-        suffixes=('_HOME', '_AWAY')
-    )
+    matchups = pd.merge(home_df, away_df, on='GAME_ID', suffixes=('_HOME', '_AWAY'))
 
-    # 3. Calculate EXACT Four Factors using Opponent Data
-    matchups['HOME_ORB_PCT_ACTUAL'] = matchups['OREB_HOME'] / (matchups['OREB_HOME'] + matchups['DREB_AWAY'])
-    matchups['AWAY_ORB_PCT_ACTUAL'] = matchups['OREB_AWAY'] / (matchups['OREB_AWAY'] + matchups['DREB_HOME'])
-
-    # 4. Create the differentials (Home - Away)
     matchups['ELO_DIFF'] = matchups['PRE_GAME_ELO_HOME'] - matchups['PRE_GAME_ELO_AWAY']
-    matchups['EFG_DIFF'] = matchups['ROLLING_eFG_PCT_HOME'] - matchups['ROLLING_eFG_PCT_AWAY']
-    matchups['TOV_PCT_DIFF'] = matchups['ROLLING_TOV_PCT_HOME'] - matchups['ROLLING_TOV_PCT_AWAY']
-    matchups['ORB_PCT_DIFF'] = matchups['ROLLING_ORB_PCT_HOME'] - matchups['ROLLING_ORB_PCT_AWAY']
-    matchups['FT_RATE_DIFF'] = matchups['ROLLING_FT_RATE_HOME'] - matchups['ROLLING_FT_RATE_AWAY']
-    matchups['WIN_STREAK_DIFF'] = matchups['WIN_STREAK_HOME'] - matchups['WIN_STREAK_AWAY']
-    matchups['REST_DIFF'] = matchups['DAYS_REST_HOME'] - matchups['DAYS_REST_AWAY']
-    matchups['B2B_DIFF'] = matchups['IS_B2B_HOME'] - matchups['IS_B2B_AWAY']
-    matchups['PLUS_MINUS_DIFF'] = matchups['ROLLING_PLUS_MINUS_HOME'] - matchups['ROLLING_PLUS_MINUS_AWAY']
-    matchups['PACE_DIFF'] = matchups['ROLLING_PACE_HOME'] - matchups['ROLLING_PACE_AWAY']
-    matchups['DEF_RATING_DIFF'] = matchups['ROLLING_DEF_RATING_HOME'] - matchups['ROLLING_DEF_RATING_AWAY']
+    for feature, source in DIFF_SOURCES.items():
+        matchups[feature] = matchups[f'{source}_HOME'] - matchups[f'{source}_AWAY']
 
-    # 5. Define the Target Variable
+    matchups['CORE_INJURY_DIFF'] = injury_diff(matchups['CORE_INJURY_LOSS_HOME'],
+                                               matchups['CORE_INJURY_LOSS_AWAY'])
+
+    extra = []
+    for feature, source in CONTEXT_FEATURES.items():
+        if f'{source}_HOME' in matchups:
+            matchups[feature] = matchups[f'{source}_HOME'] - matchups[f'{source}_AWAY']
+            extra.append(feature)
+    if 'DARKO_INJURY_LOSS_HOME' in matchups:   # Phase 3.3 experiment only
+        matchups['DARKO_INJURY_DIFF'] = injury_diff(matchups['DARKO_INJURY_LOSS_HOME'],
+                                                    matchups['DARKO_INJURY_LOSS_AWAY'])
+        extra.append('DARKO_INJURY_DIFF')
+    if 'AT_ALTITUDE_AWAY' in matchups:
+        matchups['AWAY_AT_ALTITUDE'] = matchups['AT_ALTITUDE_AWAY']
+        extra.append('AWAY_AT_ALTITUDE')
+
     matchups['TARGET'] = (matchups['WL_HOME'] == 'W').astype(int)
+    matchups['MARGIN'] = matchups['PLUS_MINUS_HOME']  # outcome, never a feature
+    matchups = matchups.rename(columns={'GAME_DATE_HOME': 'GAME_DATE'})
 
-    # Add the injury differential from the processed_df
-    matchups['CORE_INJURY_DIFF'] = matchups['CORE_INJURY_DIFF_HOME']
-
-    features = [
-        'ELO_DIFF', 'EFG_DIFF', 'TOV_PCT_DIFF', 'ORB_PCT_DIFF',
-        'FT_RATE_DIFF', 'WIN_STREAK_DIFF', 'REST_DIFF',
-        'B2B_DIFF', 'PLUS_MINUS_DIFF', 'PACE_DIFF',
-        'DEF_RATING_DIFF', 'CORE_INJURY_DIFF'
-    ]
-    return matchups[features + ['TARGET']]
+    extra = [c for c in extra if c not in FEATURES]
+    out = matchups[['GAME_ID', 'GAME_DATE'] + FEATURES + extra + ['TARGET', 'MARGIN']]
+    return out.sort_values('GAME_DATE').reset_index(drop=True)
