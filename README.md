@@ -56,6 +56,18 @@ python src/backtest.py        # held-out metrics and calibration
 streamlit run src/app.py
 ```
 
+## Refreshing Data
+`src/ingest.py` is incremental: it re-fetches only the current season (worked out from today's date) and the latest season already on disk, merges with the existing CSVs, and deduplicates on GAME_ID + TEAM_ID / GAME_ID + PLAYER_ID. Failed requests are retried with backoff, and the script exits non-zero if any season can't be fetched. `python src/ingest.py --since 2018-19` rebuilds from a given season.
+
+stats.nba.com does not reliably answer GitHub-hosted runners, so run the refresh on your own machine:
+
+- macOS/Linux: `scripts/refresh.sh` (ingest -> pipeline -> train). Daily at 10:00 with cron (`crontab -e`):
+  `0 10 * * * /path/to/nba-outcome-predictor/scripts/refresh.sh >> /path/to/refresh.log 2>&1`
+- Windows: `scripts\refresh.bat`. Daily at 10:00 with Task Scheduler:
+  `schtasks /Create /SC DAILY /ST 10:00 /TN "NBA refresh" /TR "\"C:\path\to\nba-outcome-predictor\scripts\refresh.bat\""`
+
+The GitHub Action (`.github/workflows/refresh_data.yml`) is kept for manual runs and now fails loudly when the fetch fails, or when no new games arrive between November and March.
+
 ## Dashboard
 Three pages: Today's Slate (game predictor with injury input), Backtest Results (held-out games only), Model Performance (ROC curve, confusion matrix, feature weights).
 

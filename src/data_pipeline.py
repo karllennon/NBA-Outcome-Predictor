@@ -9,7 +9,7 @@ def run_full_pipeline():
     # 1. Load from cached CSVs (skip ingestion)
     print("Loading cached data...")
     raw_game_df = pd.read_csv('data/raw_nba_data.csv')
-    player_boxscores = pd.read_csv('data/raw_player_boxscores.csv')
+    player_boxscores = pd.read_csv('data/raw_player_boxscores.csv', low_memory=False)
     positions_df = pd.read_csv('data/player_positions.csv')
 
     raw_game_df['GAME_DATE'] = pd.to_datetime(raw_game_df['GAME_DATE'])

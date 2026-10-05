@@ -19,7 +19,7 @@ class GamePredictor:
         self.model = joblib.load(model_path)
         self.state = pd.read_csv(f'{data_dir}/team_state.csv', parse_dates=['LAST_GAME_DATE'])
         team_games = pd.read_csv(f'{data_dir}/raw_nba_data.csv')
-        players = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv')
+        players = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
         players.columns = players.columns.str.strip()
         positions = pd.read_csv(f'{data_dir}/player_positions.csv')
         self.injuries = InjuryModel(players, team_games, positions)
