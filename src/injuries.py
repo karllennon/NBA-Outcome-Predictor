@@ -50,8 +50,13 @@ def status_from_misses(misses):
 
 class InjuryModel:
     def __init__(self, player_boxscores, team_games, reports=None, use_reports=False,
-                 include_doubtful=False):
-        """use_reports / include_doubtful: who is out (see report_out)."""
+                 include_doubtful=False, darko=None):
+        """
+        use_reports / include_doubtful: who is out (see report_out).
+        darko: optional darko.DarkoRatings; backfill then also adds DARKO_INJURY_LOSS, the same
+            absent players valued by DARKO DPM instead of the box-score impact score.
+        """
+        self.darko = darko
         players = player_boxscores.copy()
         players['GAME_DATE'] = pd.to_datetime(players['GAME_DATE'])
         players = players[players['MIN'] > 0]
@@ -191,10 +196,10 @@ class InjuryModel:
                 out[player] = status
         return out
 
-    def historical_loss(self, team_name, game_date):
+    def historical_out(self, team_name, game_date):
         """
-        Training-time estimate. With an injury report for this game: the players it lists as
-        out. Without one: players who missed the team's previous game are assumed out.
+        (rotation, out players) at training time. With an injury report for this game: the
+        players it lists as out. Without one: players who missed the previous game.
         """
         rot = self.rotation(team_name, game_date)
         listed = self.report_out(team_name, game_date)
@@ -202,8 +207,16 @@ class InjuryModel:
             out = self.out_statuses(rot, listed)
         else:
             out = {r.PLAYER_NAME: r.status for r in rot.itertuples() if r.status in ('acute', 'chronic')}
+        return rot, out
+
+    def historical_loss(self, team_name, game_date):
+        rot, out = self.historical_out(team_name, game_date)
         loss, _ = self.net_loss(rot, out)
         return loss
+
+    def darko_loss(self, out, game_date):
+        """Same absent players, valued by DARKO DPM x minutes share (darko.DarkoRatings.value)."""
+        return sum(self.darko.value(p, game_date) or 0.0 for p in out)
 
     def live_status(self, rotation, player_name):
         """
@@ -219,7 +232,14 @@ class InjuryModel:
         """Adds CORE_INJURY_LOSS (that team's net loss) to every team-game row."""
         if verbose:
             print("Backfilling historical injury data...")
-        losses = [self.historical_loss(t, d) for t, d in zip(game_df['TEAM_NAME'], game_df['GAME_DATE'])]
+        losses, darko_losses = [], []
+        for t, d in zip(game_df['TEAM_NAME'], game_df['GAME_DATE']):
+            rot, out_players = self.historical_out(t, d)
+            losses.append(self.net_loss(rot, out_players)[0])
+            if self.darko is not None:
+                darko_losses.append(self.darko_loss(out_players, d))
         out = game_df.copy()
         out['CORE_INJURY_LOSS'] = losses
+        if self.darko is not None:
+            out['DARKO_INJURY_LOSS'] = darko_losses
         return out

@@ -40,7 +40,7 @@ def load_injury_reports():
 
 
 def build_dataset(raw_game_df, player_boxscores, elo_params=None,
-                  injury_params=None, reports=None, verbose=True):
+                  injury_params=None, reports=None, verbose=True, darko=None):
     """
     Returns (matchup training set, feature processor, Elo calculator).
     Every feature for a game uses only games before it.
@@ -56,7 +56,7 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
 
     # Injury impact for every team-game, using only data from before that game
     injury_model = InjuryModel(player_boxscores, raw_game_df,
-                               reports=reports, **injury_params)
+                               reports=reports, darko=darko, **injury_params)
     df_with_injuries = injury_model.backfill(df_with_elo, verbose=verbose)
 
     # Team stats, rest, and rolling form

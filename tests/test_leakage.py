@@ -168,3 +168,16 @@ def test_context_for_upcoming_game_matches_training_value(raw):
     pd.testing.assert_frame_equal(a, b)
     frame_equal_before(played[played['GAME_DATE'] < CUTOFF], live[live['GAME_DATE'] < CUTOFF],
                        key, CONTEXT_COLUMNS)
+
+
+def test_darko_uses_only_snapshots_before_the_game(tmp_path):
+    from darko import DarkoRatings
+    header = 'Player,Team,DPM,MPG\n'
+    (tmp_path / 'darko_2024-01-01.csv').write_text(header + 'Test Player,X,+1.0,30\n', encoding='utf-8')
+    (tmp_path / 'darko_2024-02-01.csv').write_text(header + 'Test Player,X,+5.0,30\n', encoding='utf-8')
+    d = DarkoRatings(str(tmp_path))
+    jan = (1.0 + 2.0) * 30 / 48
+    assert d.value('Test Player', '2024-01-01') is None          # same-day snapshot not usable
+    assert d.value('Test Player', '2024-01-15') == jan
+    assert d.value('Test Player', '2024-02-01') == jan           # Feb snapshot only from Feb 2
+    assert d.value('Test Player', '2024-02-02') == (5.0 + 2.0) * 30 / 48

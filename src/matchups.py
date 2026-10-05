@@ -59,6 +59,10 @@ def create_matchup_data(processed_df):
         if f'{source}_HOME' in matchups:
             matchups[feature] = matchups[f'{source}_HOME'] - matchups[f'{source}_AWAY']
             extra.append(feature)
+    if 'DARKO_INJURY_LOSS_HOME' in matchups:   # Phase 3.3 experiment only
+        matchups['DARKO_INJURY_DIFF'] = injury_diff(matchups['DARKO_INJURY_LOSS_HOME'],
+                                                    matchups['DARKO_INJURY_LOSS_AWAY'])
+        extra.append('DARKO_INJURY_DIFF')
     if 'AT_ALTITUDE_AWAY' in matchups:
         matchups['AWAY_AT_ALTITUDE'] = matchups['AT_ALTITUDE_AWAY']
         extra.append('AWAY_AT_ALTITUDE')

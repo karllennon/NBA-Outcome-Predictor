@@ -137,6 +137,25 @@ before 3.1 was applied; the shipped impact score is unchanged by 3.1.)
 - **DARKO DPM** (darko.app): the site states its leaderboard has a CSV download and that a
   "Time Machine" sets it to any past date, so it can be used legally.
 
+**Test (not kept).** 21 leaderboard snapshots were downloaded with the site's CSV button (the day
+before each season opener and the 1st of each month, 2023-10 to 2026-04), each checked against
+the page for its date. A player's value is (DPM - (-2.0)) x projected minutes / 48 from the
+latest snapshot dated strictly before the game (the "DPM now" column is ignored). Same rotation
+and same absent players as the shipped feature; only the value of each absence changes.
+Measured on the final shipped model (1,762 held-out games):
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 68.56% | 0.5947 | 0.2041 |
+| **Shipped: box-score impact** | **0.7579** | **70.43%** | **0.5795** | **0.1982** |
+| DARKO replaces box impact | 0.7548 | 69.92% | 0.5824 | 0.1993 |
+| DARKO added as a second feature | 0.7577 | 69.98% | 0.5797 | 0.1983 |
+
+Replace: +0.0029 log loss (SE 0.0016), worse in all 4 folds. Add: +0.0002 (SE 0.0004). The two
+injury measures correlate 0.81; where they differ, the box-score version predicts better. Not
+kept. The code stays (`src/darko.py`, `python src/experiments.py darko_impact`); the CSVs are
+not committed (they are DARKO's data) and go in `data/darko/` to rerun.
+
 **Caveat, not confirmed: whether DARKO's Time Machine shows ratings as they were published on
 that date.** The site's changelog says the Time Machine was added on 2026-09-27, and DARKO
 shows ratings back to 1996-97, long before DARKO existed. So past-date values are most likely

@@ -358,6 +358,24 @@ def new_features(groups=None):
     return out
 
 
+@experiment
+def darko_impact():
+    """Value absent players by DARKO DPM (latest snapshot before each game) instead of, or in
+    addition to, the box-score impact score. Same rotation and same players counted out."""
+    from darko import DarkoRatings
+    darko = DarkoRatings()
+    print(f"DARKO snapshots: {len(darko.snapshots)} ({darko.snapshots[0].date()} to {darko.snapshots[-1].date()})")
+    games, players = raw()
+    df, _, _ = build_dataset(games, players, injury_params=data_pipeline.INJURY_PARAMS,
+                             reports=load_injury_reports(), darko=darko, verbose=False)
+    print(f"corr(box injury diff, DARKO injury diff) = {df['CORE_INJURY_DIFF'].corr(df['DARKO_INJURY_DIFF']):.3f}")
+    replace = [('DARKO_INJURY_DIFF' if f == 'CORE_INJURY_DIFF' else f) for f in FEATURES]
+    return compare({'Shipped: box-score impact': df,
+                    'DARKO replaces box impact': (df, replace),
+                    'DARKO added as a second feature': (df, FEATURES + ['DARKO_INJURY_DIFF'])},
+                   'Injury impact from DARKO DPM')
+
+
 # replacement_boosts and minutes_weighting were tested here and their switches removed after
 # the results (RESULTS.md, Phase 3): boosts hurt, minutes weighting did not help.
 

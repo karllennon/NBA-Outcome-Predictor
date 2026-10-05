@@ -157,8 +157,8 @@ the fetch fails, or when no new games arrive between November and March.
 ## Known Limitations
 - The market's tip-off price beats the model (log loss 0.569 vs 0.581 on 1,223 games).
 - Box-score impact scores undervalue defensive specialists. No all-in-one plus-minus metric is
-  used: EPM and LEBRON are paid, RAPM's data API is closed to automated use, and DARKO was not
-  tested (see RESULTS.md).
+  used: EPM and LEBRON are paid, RAPM's data API is closed to automated use, and DARKO DPM was
+  tested and did not improve on the box-score impact score (see RESULTS.md).
 - Injury reports for 2020-01 to 2022-23 are not archived (the NBA CDN rate-limited the
   backfill); those seasons are not used for training.
 - Live predictions use the latest injury report at the time they are made; late scratches after

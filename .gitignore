@@ -18,3 +18,5 @@ __pycache__/
 
 # VS Code
 .vscode/
+# DARKO leaderboard downloads (their data; download yourself, see RESULTS.md Phase 3.3)
+data/darko/
