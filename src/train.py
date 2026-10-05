@@ -150,10 +150,17 @@ def train_model():
     os.makedirs('models', exist_ok=True)
     joblib.dump(final_model, 'models/nba_model.joblib')
 
-    # 5. Spread model: a separate output (the win probability still comes from the classifier)
-    spread = spread_model.fit_target(spread_model.TARGETS['spread'], df)
-    spread_model.save(spread)
-    print(f"Spread model: Ridge on home margin, sigma {spread.sigma:.2f} pts -> {spread.config.model_path}")
+    # 5. Numeric targets (spread now; e.g. total points later): one config entry each in
+    #    spread_model.TARGETS. These are separate outputs; the win probability still comes from
+    #    the classifier above.
+    for name, cfg in spread_model.TARGETS.items():
+        if cfg.target not in df:
+            print(f"Skipping target '{name}': training set has no column {cfg.target}")
+            continue
+        fitted = spread_model.fit_target(cfg, df)
+        spread_model.save(fitted)
+        print(f"Target '{name}': {cfg.target} ~ {len(cfg.features)} features, sigma {fitted.sigma:.2f} "
+              f"-> {cfg.model_path}")
 
     print(f"\nShipped model: {shipped}, refit on all {len(df)} games -> models/nba_model.joblib")
     weights = feature_weights(final_model)

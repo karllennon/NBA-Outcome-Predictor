@@ -13,6 +13,13 @@ nearest 0.5, favorite first ("BOS -4.5"), "PK" when the predicted margin rounds 
 Uncertainty: sigma is the standard deviation of residuals on the most recent SIGMA_HOLDOUT of the
 training games, predicted by a model fit on the earlier training games; the model is then refit
 on all training games. It never sees test games. P(margin > x) = 1 - Phi((x - mu) / sigma).
+
+Adding a target (e.g. game total points):
+  1. add the outcome column to the training set in matchups.create_matchup_data
+     (e.g. TOTAL_POINTS = PTS_HOME + PTS_AWAY; an outcome, never a feature)
+  2. add TargetConfig('total', 'TOTAL_POINTS', model_path='models/total_model.joblib') to TARGETS
+train.py then fits and saves it, and load('total') / FittedTarget.prob_over(X, line) give the
+prediction and P(over the line) at prediction time.
 """
 from dataclasses import dataclass, field
 import joblib
