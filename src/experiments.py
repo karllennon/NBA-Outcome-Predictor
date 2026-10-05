@@ -421,6 +421,13 @@ def _paper_trades(min_edge=None):
              'MARKET_YES_BID': m['HOME_YES_BID'], 'MARKET_YES_ASK': m['HOME_YES_ASK'],
              'MODEL_HOME_MARGIN': r.MODEL_MARGIN, 'SPREAD_SIGMA': r.SIGMA, 'MARKET_SPREAD_INFO': info}
         d = D.game_decisions(g, min_edge)
+        pk = d['pick']
+        if pk:
+            won = (r.MARGIN > 0) == (pk['side'] == 'YES')
+            trades.append({'GAME_ID': r.GID, 'GAME_DATE': r.GAME_DATE,
+                           'market': 'pick: market underdog' if pk['market_underdog'] else 'pick: market favorite',
+                           'lean': True, 'edge_pts': pk['edge_pts'], 'p_side': pk['p_side'], 'mid': pk['mid'],
+                           'fill': pk['fill'], 'won': bool(won), 'pnl': D.settle('X', pk['fill'], won)})
         for market in ('moneyline', 'spread'):
             x = d[market]
             if not x or x.get('mid') is None:

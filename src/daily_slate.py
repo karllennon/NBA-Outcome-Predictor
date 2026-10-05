@@ -76,6 +76,10 @@ def decision_fields(row, report_time=None):
         out.update({f'{prefix}_DECISION': x.get('label'), f'{prefix}_SIDE': x.get('side'),
                     f'{prefix}_P': x.get('p_side'), f'{prefix}_MID': x.get('mid'), f'{prefix}_FILL': x.get('fill'),
                     f'{prefix}_EDGE_PTS': x.get('edge_pts'), f'{prefix}_EV': x.get('ev')})
+    pick = d['pick'] or {}
+    out.update({'PICK_TEAM': pick.get('team'), 'PICK_SIDE': pick.get('side'), 'PICK_P': pick.get('p_side'),
+                'PICK_MID': pick.get('mid'), 'PICK_FILL': pick.get('fill'),
+                'PICK_MARKET_UNDERDOG': pick.get('market_underdog')})
     out['ML_TEAM'] = (d['moneyline'] or {}).get('team')
     out['SPREAD_FAV'] = (d['spread'] or {}).get('fav')
     out['SPREAD_STRIKE'] = (d['spread'] or {}).get('strike')

@@ -73,3 +73,17 @@ def test_paper_trades_settle_spread_and_moneyline():
     t = pl.paper_trades(record).set_index('market')
     assert t.loc['moneyline', 'won'] and t.loc['spread', 'won']          # BOS won by 6 < 7.5
     assert np.isclose(t.loc['moneyline', 'pnl'], 1 - 0.54 - 0.02)         # fee at 54 cents = 2 cents
+
+
+def test_pick_the_winner_trades_settle_and_split_by_market_underdog():
+    rows = [{'GAME_ID': '1', 'GAME_DATE': '2026-11-01', 'HOME_ABBR': 'BOS', 'ACTUAL_MARGIN': 5,
+             'PICK_TEAM': 'BOS', 'PICK_SIDE': 'YES', 'PICK_P': 0.56, 'PICK_MID': 0.41, 'PICK_FILL': 0.42,
+             'PICK_MARKET_UNDERDOG': True},
+            {'GAME_ID': '2', 'GAME_DATE': '2026-11-01', 'HOME_ABBR': 'NYK', 'ACTUAL_MARGIN': 3,
+             'PICK_TEAM': 'MIA', 'PICK_SIDE': 'NO', 'PICK_P': 0.60, 'PICK_MID': 0.62, 'PICK_FILL': 0.63,
+             'PICK_MARKET_UNDERDOG': False}]
+    t = pl.paper_trades(pd.DataFrame(rows))
+    assert list(t['won']) == [True, False]
+    s = pl.paper_summary(t)
+    assert set(s.index) == {'pick: market underdog', 'pick: market favorite', 'pick the winner (all)'}
+    assert s.loc['pick the winner (all)', 'leans'] == 2

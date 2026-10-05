@@ -34,7 +34,9 @@ LOG_COLUMNS = ['LOGGED_AT_UTC', 'GAME_ID', 'GAME_DATE', 'TIP_TIME_ET', 'HOME_TEA
                'MIN_EDGE_PTS',
                'ML_DECISION', 'ML_SIDE', 'ML_TEAM', 'ML_P', 'ML_MID', 'ML_FILL', 'ML_EDGE_PTS', 'ML_EV',
                'SPREAD_DECISION', 'SPREAD_SIDE', 'SPREAD_FAV', 'SPREAD_STRIKE', 'SPREAD_P', 'SPREAD_MID',
-               'SPREAD_FILL', 'SPREAD_EDGE_PTS', 'SPREAD_EV']
+               'SPREAD_FILL', 'SPREAD_EDGE_PTS', 'SPREAD_EV',
+               # 'pick the winner': a $1 paper trade on the model's favorite in every priced game
+               'PICK_TEAM', 'PICK_SIDE', 'PICK_P', 'PICK_MID', 'PICK_FILL', 'PICK_MARKET_UNDERDOG']
 
 
 def model_version(path='models/nba_model.joblib'):
@@ -174,6 +176,14 @@ def paper_trades(record):
                          'decision': r.get('SPREAD_DECISION'), 'p': r.get('SPREAD_P'), 'mid': r.get('SPREAD_MID'),
                          'fill': r.get('SPREAD_FILL'), 'won': bool(won),
                          'pnl': settle(side, r.get('SPREAD_FILL'), won)})
+        side = r.get('PICK_SIDE')
+        if isinstance(side, str) and side:
+            won = (r['ACTUAL_MARGIN'] > 0) == (side == 'YES')
+            dog = r.get('PICK_MARKET_UNDERDOG') in (True, 'True', 1, '1')
+            rows.append({'GAME_ID': r['GAME_ID'], 'GAME_DATE': r['GAME_DATE'],
+                         'market': 'pick: market underdog' if dog else 'pick: market favorite',
+                         'decision': f"Pick {r.get('PICK_TEAM')}", 'p': r.get('PICK_P'), 'mid': r.get('PICK_MID'),
+                         'fill': r.get('PICK_FILL'), 'won': bool(won), 'pnl': settle(side, r.get('PICK_FILL'), won)})
     return pd.DataFrame(rows, columns=['GAME_ID', 'GAME_DATE', 'market', 'decision', 'p', 'mid', 'fill', 'won', 'pnl'])
 
 
@@ -181,5 +191,8 @@ def paper_summary(trades):
     """Per market: leans, win rate, average price paid, total and per-trade P/L."""
     if trades.empty:
         return pd.DataFrame()
+    picks = trades[trades['market'].str.startswith('pick')]
+    if len(picks):   # all picks together, plus the two halves
+        trades = pd.concat([trades, picks.assign(market='pick the winner (all)')], ignore_index=True)
     return trades.groupby('market').agg(leans=('won', 'size'), win_rate=('won', 'mean'), avg_price=('fill', 'mean'),
                                         avg_model_p=('p', 'mean'), total_pnl=('pnl', 'sum'), per_trade=('pnl', 'mean'))

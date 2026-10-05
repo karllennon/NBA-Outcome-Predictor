@@ -441,6 +441,21 @@ def _outcome(g, d, market):
     return ui.pill(f"{market} lean {'won' if won else 'lost'}", 'good' if won else 'crit')
 
 
+def _pick_row(g, pick):
+    """'Pick the winner' paper trade line (every priced game, no edge filter)."""
+    if not pick:
+        return ''
+    tag = ui.pill('model picks the market underdog', 'warn') if pick['market_underdog'] else ''
+    result = ''
+    if g.get('HOME_PTS') is not None:
+        won = ((g['HOME_PTS'] > g['AWAY_PTS']) == (pick['side'] == 'YES'))
+        result = ' ' + ui.pill('won' if won else 'lost', 'good' if won else 'crit')
+    return (f'<div class="cv-dec-row"><span class="cv-dec-mkt">Pick</span>'
+            f'<span class="cv-dec-line">{ui.esc(pick["team"])} at {pick["fill"] * 100:.0f}¢ (paper $1)'
+            f'<br><span class="sub">model {pick["p_side"]:.0%} to win · every game, no edge filter</span></span>'
+            f'<span>{tag}{result}</span></div>')
+
+
 def decision_card(g, d):
     lean = any(x and x.get('side') for x in (d['moneyline'], d['spread']))
     tip = fmt_tip(g.get('TIP_TIME_ET'))
@@ -461,6 +476,7 @@ def decision_card(g, d):
             f'{ui.esc(score)}</div></div><div class="cv-dec-model">{model_txt}</div></div>'
             f'{_market_row("Spread", g, d["spread"], "spread")}'
             f'{_market_row("Moneyline", g, d["moneyline"], "moneyline")}'
+            f'{_pick_row(g, d["pick"])}'
             f'{notes_html}'
             f'{"<div style=" + chr(39) + "margin-top:6px" + chr(39) + ">" + outcomes + "</div>" if outcomes else ""}'
             f'<div class="cv-dec-foot">{ui.esc(decisions.DISCLAIMER)} Leans need {decisions.MIN_EDGE_PTS:g}+ pts '
@@ -840,7 +856,7 @@ def page_track_record():
             f'<td class="num">{r.win_rate:.1%}</td><td class="num">{r.avg_price * 100:.0f}¢</td>'
             f'<td class="num">{r.avg_model_p:.0%}</td><td class="num">${r.total_pnl:+.2f}</td>'
             f'<td class="num">${r.per_trade:+.3f}</td></tr>' for mk, r in summary.iterrows())
-        body += ('<table class="cv-table"><tr><th>Market</th><th class="num">Leans</th><th class="num">Won</th>'
+        body += ('<table class="cv-table"><tr><th>Market</th><th class="num">Trades</th><th class="num">Won</th>'
                  '<th class="num">Avg price paid</th><th class="num">Model chance</th>'
                  '<th class="num">Total P/L</th><th class="num">Per trade</th></tr>' + rows + '</table>'
                  '<div class="cv-small" style="margin-top:8px">A lean is worth it only if it wins more often than '

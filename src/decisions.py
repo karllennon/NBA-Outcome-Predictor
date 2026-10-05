@@ -92,6 +92,26 @@ def spread_market_prob(home_margin, sigma, fav_is_home, strike):
     return float(1 - prob_margin_over(home_margin, sigma, -strike))
 
 
+def pick_the_winner(p_home, yes_bid, yes_ask, home_abbr, away_abbr):
+    """
+    'Pick the winner' paper trade: always the team the model favors, every game with a price,
+    regardless of edge. Tagged when that team is the market's underdog (the slice that was
+    profitable in the 2025-26 backtest; tracked live to test it out of sample).
+    """
+    if yes_bid is None or yes_ask is None or any(isinstance(x, float) and math.isnan(x) for x in (yes_bid, yes_ask)):
+        return None
+    mid = (yes_bid + yes_ask) / 2
+    if not (0 < mid < 1):
+        return None
+    pick_home = p_home >= 0.5
+    side = 'YES' if pick_home else 'NO'
+    p = p_home if pick_home else 1 - p_home
+    price = mid if pick_home else 1 - mid
+    fill = yes_ask if pick_home else 1 - yes_bid
+    return {'team': home_abbr if pick_home else away_abbr, 'side': side, 'p_side': p, 'mid': price,
+            'fill': fill, 'edge_pts': side_edge(p, price)[0], 'market_underdog': price < 0.5}
+
+
 def game_decisions(g, min_edge=MIN_EDGE_PTS):
     """
     Decisions for one game dict (live or replay view): moneyline and spread.
@@ -100,9 +120,10 @@ def game_decisions(g, min_edge=MIN_EDGE_PTS):
     'flags' and 'warnings'.
     """
     home, away = g['HOME_ABBR'], g['AWAY_ABBR']
-    out = {'moneyline': None, 'spread': None, 'flags': [], 'warnings': []}
+    out = {'moneyline': None, 'spread': None, 'pick': None, 'flags': [], 'warnings': []}
 
     bid, ask = g.get('MARKET_YES_BID', g.get('HOME_YES_BID')), g.get('MARKET_YES_ASK', g.get('HOME_YES_ASK'))
+    out['pick'] = pick_the_winner(g['MODEL_HOME_PROB'], bid, ask, home, away)
     ml = decide(g['MODEL_HOME_PROB'], bid, ask, min_edge)
     if ml['mid'] is not None:
         team = home if ml['best_side'] == 'YES' else away      # the side with the better edge

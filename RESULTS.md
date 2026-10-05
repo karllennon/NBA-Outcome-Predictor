@@ -421,3 +421,26 @@ market (the rung priced closest to 50 cents, "wins by over N.5"); P(cover) comes
 predicted margin and sigma. Every decision is logged before tip-off as a $1 paper trade at the
 ask plus fee (more conservative than the midpoint). No orders are placed and the project has no
 trading code. Hypothetical analysis, not betting advice.
+
+### "Pick the winner" paper trades and strategy notes
+
+A second paper-trade track buys the team the model favors in every game with a Kalshi price
+($1 at the ask plus fee), with no edge filter, tagged by whether that team is the market's
+favorite or underdog. Backtest on held-out 2025-26 games (figures kept local, Kalshi terms):
+
+- **Every pick:** the model picked the winner about 70% of the time but paid about that much on
+  average, so the result was close to break-even after fees, well within noise. Blindly buying
+  the market favorite did worse.
+- **When the model picks the market's underdog** (about 1 game in 9): positive in most months and
+  in both halves of the season, while blindly buying market underdogs lost money. This slice was
+  found after looking at the results, so it is a hypothesis, not an established edge. It is
+  tracked live (the log's `PICK_MARKET_UNDERDOG` column) to test it on games the model has not
+  been evaluated on.
+- **Stake sizing** (e.g. capped half-Kelly) cannot create an edge; it scales whatever edge exists
+  and makes the losing stretches much deeper. Shrinking the model's probability toward the market
+  before sizing is the more cautious choice, since the model was overconfident in those games.
+- **Multi-leg combinations** multiply the per-leg edge, positive or negative, and the variance;
+  with break-even legs they returned about nothing. Not worth building until single-game results
+  hold up out of sample.
+
+Hypothetical analysis, not betting advice.
