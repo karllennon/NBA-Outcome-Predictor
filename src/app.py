@@ -11,6 +11,7 @@ import streamlit as st
 sys.path.append(os.path.dirname(__file__))
 
 import dashboard_data as dd
+import decisions
 import ui
 from inference import GamePredictor
 from matchups import FEATURES
@@ -714,6 +715,42 @@ def page_track_record():
                               '<div class="cv-small" style="margin-top:8px">About 52-53% on the right side of '
                               'the line is roughly break-even after fees; a few hundred games are needed before '
                               'this means much.</div>'))
+    trades = prediction_log.paper_trades(record)
+    summary = prediction_log.paper_summary(trades)
+    body = ('<div class="cv-small" style="margin-bottom:8px"><b>Hypothetical $1 paper trades, not real bets</b> '
+            '(no orders are ever placed). Each lean is recorded before tip-off at the ask price plus the Kalshi fee. '
+            'Under a few hundred trades, these results prove very little either way.</div>')
+    if summary.empty:
+        body += '<div class="cv-muted">No settled leans yet.</div>'
+    else:
+        rows = ''.join(
+            f'<tr><td>{ui.esc(mk.capitalize())}</td><td class="num">{int(r.leans)}</td>'
+            f'<td class="num">{r.win_rate:.1%}</td><td class="num">{r.avg_price * 100:.0f}¢</td>'
+            f'<td class="num">{r.avg_model_p:.0%}</td><td class="num">${r.total_pnl:+.2f}</td>'
+            f'<td class="num">${r.per_trade:+.3f}</td></tr>' for mk, r in summary.iterrows())
+        body += ('<table class="cv-table"><tr><th>Market</th><th class="num">Leans</th><th class="num">Won</th>'
+                 '<th class="num">Avg price paid</th><th class="num">Model chance</th>'
+                 '<th class="num">Total P/L</th><th class="num">Per trade</th></tr>' + rows + '</table>'
+                 '<div class="cv-small" style="margin-top:8px">A lean is worth it only if it wins more often than '
+                 'the average price paid (plus fees). "Model chance" vs "Won" is the calibration check.</div>')
+    ui.html_block(ui.card('Paper trades (hypothetical)', body, sub=decisions.DISCLAIMER))
+    if len(trades):
+        with st.container(key='card-paper-cal'):
+            ui.card_title('Calibration of leans', 'model chance vs how often the lean won')
+            cal = trades.assign(b=pd.cut(trades['p'], [0, .5, .6, .7, .8, 1.0])).groupby(['market', 'b'], observed=True)                 .agg(n=('won', 'size'), p=('p', 'mean'), won=('won', 'mean')).reset_index()
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=[0, 100], y=[0, 100], mode='lines', line=dict(color='rgba(147,160,184,0.45)', dash='dot', width=1),
+                                     hoverinfo='skip', name='Perfect'))
+            for mk, color in [('moneyline', ui.MODEL), ('spread', ui.MARKET)]:
+                c = cal[cal['market'] == mk]
+                if len(c):
+                    fig.add_trace(go.Scatter(x=c['p'] * 100, y=c['won'] * 100, mode='lines+markers', name=mk.capitalize(),
+                                             line=dict(color=color, width=2), marker=dict(size=9), customdata=c['n'],
+                                             hovertemplate='model %{x:.0f}% · won %{y:.0f}%<br>%{customdata} leans<extra></extra>'))
+            fig.update_xaxes(range=[40, 100], ticksuffix='%')
+            fig.update_yaxes(range=[0, 100], ticksuffix='%')
+            ui.plotly_layout(fig, height=260)
+            st.plotly_chart(fig, use_container_width=True, config=ui.PLOTLY_CONFIG)
     if len(record) < 100:
         st.caption(f"Only {len(record)} games so far: these numbers will move a lot until a few hundred are in.")
 

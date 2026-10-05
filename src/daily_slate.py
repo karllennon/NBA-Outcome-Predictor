@@ -59,6 +59,29 @@ def spread_fields(res, market_spread, home_abbr, away_abbr):
             'TOSS_UP': (res['home_prob'] > 0.5) != (margin > 0)}
 
 
+def _utc_to_et(ts):
+    return pd.Timestamp(ts).tz_localize('UTC').tz_convert('America/New_York').tz_localize(None)
+
+
+def decision_fields(row, report_time=None):
+    """Hypothetical decisions (decisions.py) for one slate row, flattened for the log."""
+    import decisions as D
+    d = D.game_decisions(row)
+    warnings = list(d['warnings'])
+    if report_time is not None and row.get('MARKET_TIME_ET') is not None and report_time > row['MARKET_TIME_ET']:
+        warnings.append('Injury report updated after the market price was taken: check late news first')
+    out = {'DECISIONS': d, 'FLAGS': d['flags'], 'WARNINGS': warnings, 'MIN_EDGE_PTS': D.MIN_EDGE_PTS}
+    for key, prefix in (('moneyline', 'ML'), ('spread', 'SPREAD')):
+        x = d[key] or {}
+        out.update({f'{prefix}_DECISION': x.get('label'), f'{prefix}_SIDE': x.get('side'),
+                    f'{prefix}_P': x.get('p_side'), f'{prefix}_MID': x.get('mid'), f'{prefix}_FILL': x.get('fill'),
+                    f'{prefix}_EDGE_PTS': x.get('edge_pts'), f'{prefix}_EV': x.get('ev')})
+    out['ML_TEAM'] = (d['moneyline'] or {}).get('team')
+    out['SPREAD_FAV'] = (d['spread'] or {}).get('fav')
+    out['SPREAD_STRIKE'] = (d['spread'] or {}).get('strike')
+    return out
+
+
 def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
     """
     One row per regular-season or playoff game on `game_date` (default today, Eastern):
@@ -93,6 +116,8 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
 
     now_et = pd.Timestamp.now(tz=ET).tz_localize(None)
     version = prediction_log.model_version()
+    report_time = (None if predictor.report is None else
+                   pd.Timestamp(predictor.report['REPORT_TIME'].max()))
     rows, to_log = [], []
     for g in sched.itertuples():
         try:
@@ -114,6 +139,8 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
         row['GAP'] = None if pd.isna(market_prob) else res['home_prob'] - market_prob
         row.update(spread_fields(res, spreads.get((abbr.get(g.HOME_TEAM), abbr.get(g.AWAY_TEAM))),
                                  abbr.get(g.HOME_TEAM, g.HOME_TEAM[:3]), abbr.get(g.AWAY_TEAM, g.AWAY_TEAM[:3])))
+        row['MARKET_TIME_ET'] = None if m is None else _utc_to_et(m['SNAPSHOT_TIME_UTC'])
+        row.update(decision_fields(row, report_time))
         rows.append(row)
         pregame = g.STATUS == 'scheduled' and (pd.isna(g.TIP_TIME_ET) or now_et < g.TIP_TIME_ET)
         if log and pregame:
@@ -157,9 +184,18 @@ def print_slate(slate):
         if r.SPREAD_TEXT:
             print(f"{'':>10}spread: model {r.SPREAD_TEXT:<10} market {r.MARKET_SPREAD_TEXT or 'n/a'}"
                   + ("   (win probability and spread disagree: close to a toss-up)" if r.TOSS_UP else ''))
+        for label, dec, edge in [('moneyline', r.ML_DECISION, r.ML_EDGE_PTS),
+                                 ('spread', r.SPREAD_DECISION, r.SPREAD_EDGE_PTS)]:
+            if dec:
+                print(f"{'':>10}{label}: {dec}" + ('' if edge is None or pd.isna(edge) else f" ({edge:+.1f} pts after fees)"))
+        for note in list(r.FLAGS or []) + list(r.WARNINGS or []):
+            print(f"{'':>10}! {note}")
     print("\nProbabilities are for the home team. Gaps under ~5 points are within Kalshi's fees "
           "and normal model error; even larger gaps are often the market knowing something the "
           "model doesn't (late scratches, rest).")
+    import decisions
+    print(f"Leans need an edge of at least {decisions.MIN_EDGE_PTS:g} points after Kalshi fees. "
+          f"{decisions.DISCLAIMER} Paper trades only; no orders are placed.")
 
 
 if __name__ == "__main__":

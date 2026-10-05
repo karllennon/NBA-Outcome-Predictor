@@ -31,3 +31,4 @@ data/prediction_log.csv
 data/test_spread_predictions.csv
 data/spread_metrics.csv
 data/spread_disagreement.csv
+data/market_report.md

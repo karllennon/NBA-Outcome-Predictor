@@ -7,7 +7,9 @@ are in. Rows are only ever appended; earlier rows are never rewritten.
         MODEL_HOME_PROB, MARKET_HOME_PROB, MARKET_YES_BID, MARKET_YES_ASK,
         MODEL_VERSION, HOME_OUT, AWAY_OUT, INPUTS (JSON of the feature row),
         MODEL_HOME_MARGIN, SPREAD (home line, betting convention), SPREAD_SIGMA,
-        MARKET_SPREAD (market home line)
+        MARKET_SPREAD (market home line),
+        decision columns for the moneyline (ML_*) and spread (SPREAD_*) markets: a hypothetical
+        $1 paper trade whenever the decision is a lean (never a real order)
 
 When LOG_COLUMNS changes, new rows start a new segment file (prediction_log.<timestamp>.csv)
 instead of rewriting the old file to add columns; load() reads all segments together. The log
@@ -23,9 +25,16 @@ import pandas as pd
 
 LOG_PATH = 'data/prediction_log.csv'
 LOG_COLUMNS = ['LOGGED_AT_UTC', 'GAME_ID', 'GAME_DATE', 'TIP_TIME_ET', 'HOME_TEAM', 'AWAY_TEAM',
+               'HOME_ABBR', 'AWAY_ABBR',
                'MODEL_HOME_PROB', 'MARKET_HOME_PROB', 'MARKET_YES_BID', 'MARKET_YES_ASK',
                'MODEL_VERSION', 'HOME_OUT', 'AWAY_OUT', 'INPUTS',
-               'MODEL_HOME_MARGIN', 'SPREAD', 'SPREAD_SIGMA', 'MARKET_SPREAD']
+               'MODEL_HOME_MARGIN', 'SPREAD', 'SPREAD_SIGMA', 'MARKET_SPREAD',
+               # hypothetical decisions / $1 paper trades (decisions.py); *_SIDE is YES or NO of the
+               # market (moneyline: home YES; spread: favorite's main line), blank = no play
+               'MIN_EDGE_PTS',
+               'ML_DECISION', 'ML_SIDE', 'ML_TEAM', 'ML_P', 'ML_MID', 'ML_FILL', 'ML_EDGE_PTS', 'ML_EV',
+               'SPREAD_DECISION', 'SPREAD_SIDE', 'SPREAD_FAV', 'SPREAD_STRIKE', 'SPREAD_P', 'SPREAD_MID',
+               'SPREAD_FILL', 'SPREAD_EDGE_PTS', 'SPREAD_EV']
 
 
 def model_version(path='models/nba_model.joblib'):
@@ -141,3 +150,36 @@ def spread_accuracy(record):
             actual_side = m['ACTUAL_MARGIN'] > threshold
             out.update({'vs_line_games': len(m), 'right_side_of_line': float((model_side == actual_side).mean())})
     return out
+
+
+def paper_trades(record):
+    """
+    Settle the logged leans ($1 paper contracts bought at the logged fill price plus fee).
+    One row per lean: market ('moneyline' or 'spread'), p (model chance), fill, won, pnl.
+    """
+    from decisions import settle
+    rows = []
+    for r in record.to_dict('records'):
+        side = r.get('ML_SIDE')
+        if isinstance(side, str) and side:
+            won = (r['ACTUAL_MARGIN'] > 0) == (side == 'YES')
+            rows.append({'GAME_ID': r['GAME_ID'], 'GAME_DATE': r['GAME_DATE'], 'market': 'moneyline',
+                         'decision': r.get('ML_DECISION'), 'p': r.get('ML_P'), 'mid': r.get('ML_MID'),
+                         'fill': r.get('ML_FILL'), 'won': bool(won), 'pnl': settle(side, r.get('ML_FILL'), won)})
+        side = r.get('SPREAD_SIDE')
+        if isinstance(side, str) and side and r.get('SPREAD_STRIKE') == r.get('SPREAD_STRIKE'):
+            fav_margin = r['ACTUAL_MARGIN'] if r.get('SPREAD_FAV') == r.get('HOME_ABBR') else -r['ACTUAL_MARGIN']
+            won = (fav_margin > r['SPREAD_STRIKE']) == (side == 'YES')
+            rows.append({'GAME_ID': r['GAME_ID'], 'GAME_DATE': r['GAME_DATE'], 'market': 'spread',
+                         'decision': r.get('SPREAD_DECISION'), 'p': r.get('SPREAD_P'), 'mid': r.get('SPREAD_MID'),
+                         'fill': r.get('SPREAD_FILL'), 'won': bool(won),
+                         'pnl': settle(side, r.get('SPREAD_FILL'), won)})
+    return pd.DataFrame(rows, columns=['GAME_ID', 'GAME_DATE', 'market', 'decision', 'p', 'mid', 'fill', 'won', 'pnl'])
+
+
+def paper_summary(trades):
+    """Per market: leans, win rate, average price paid, total and per-trade P/L."""
+    if trades.empty:
+        return pd.DataFrame()
+    return trades.groupby('market').agg(leans=('won', 'size'), win_rate=('won', 'mean'), avg_price=('fill', 'mean'),
+                                        avg_model_p=('p', 'mean'), total_pnl=('pnl', 'sum'), per_trade=('pnl', 'mean'))

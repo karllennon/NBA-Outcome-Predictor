@@ -383,3 +383,41 @@ games the win probability is at most 6.6 points from 50% (median 1.5) and the pr
 at most 1.8 points (median 0.4). When they disagree, the win probability picked the winner in
 52.5% and the spread in 47.5% (59 games, no real difference). The dashboard marks these games as
 close to a toss-up.
+
+### Spread uncertainty (sigma) and calibration
+
+Each fold's sigma is the residual standard deviation on the last 20% of that fold's training
+games, predicted by a model fit on the earlier 80% (`spread_model.fit_target`); test games are
+never used. Fold sigmas: 13.7, 13.8, 14.1 and 14.5 points (held-out residual SD: 14.0). The
+shipped model's sigma, from the same procedure on all games, is 14.4.
+
+Calibration on held-out games (`python src/experiments.py spread_calibration`): for every game,
+lines at the predicted margin plus -12, -8, -4, 0, +4, +8 and +12 points (.5 lines), the predicted
+P(margin > line) against how often the margin actually cleared it:
+
+| Predicted chance | Cases | Predicted (avg) | Actual |
+|---|---|---|---|
+| 0-20% | 1,670 | 18.6% | 17.1% |
+| 20-30% | 1,854 | 26.9% | 24.6% |
+| 30-40% | 1,762 | 37.4% | 36.8% |
+| 45-55% | 1,762 | 48.6% | 48.9% |
+| **55-60%** | **971** | **59.2%** | **60.8%** |
+| 60-70% | 1,440 | 64.6% | 65.2% |
+| 70-80% | 2,496 | 75.4% | 76.5% |
+| 80-100% | 379 | 80.4% | 82.1% |
+
+Close to calibrated: predictions with about a 60% chance of covering covered about 61% of the
+time. Below 30% the model is a little too generous to the underdog side (predicted 26.9%,
+actual 24.6%). The rows share games, so they are not independent.
+
+### Decisions (hypothetical, paper trading only)
+
+`src/decisions.py` turns the probabilities into a decision per game and market. For a market
+priced P: Kalshi's taker fee is 0.07 x P x (1 - P) per contract, rounded up to the cent
+(Kalshi fee schedule, "most markets", October 2026); edge = model chance - midpoint - fee, in
+percentage points; EV per $1 contract = model chance - price - fee. A side is a "lean" when its
+edge after fees is at least `MIN_EDGE_PTS` (5). Spread decisions use the favorite's main-line
+market (the rung priced closest to 50 cents, "wins by over N.5"); P(cover) comes from the
+predicted margin and sigma. Every decision is logged before tip-off as a $1 paper trade at the
+ask plus fee (more conservative than the midpoint). No orders are placed and the project has no
+trading code. Hypothetical analysis, not betting advice.
