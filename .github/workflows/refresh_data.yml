@@ -2,13 +2,12 @@ name: Daily Data Refresh
 
 # stats.nba.com times out for GitHub-hosted runner IPs: every scheduled run from March to
 # May 2026 spent ~4 minutes waiting on timeouts, fetched nothing, and still showed success.
-# The primary refresh path is now scripts/refresh.sh (or .bat) on your own machine.
-# This workflow is kept for manual runs and fails loudly when the fetch fails or no
-# data changes, instead of passing silently.
+# A test run on 2026-10-05 with fixed request headers timed out the same way (run 37254192221),
+# so the daily schedule is removed. Refresh with scripts/refresh.sh (or .bat) on your own
+# machine. This workflow is kept for manual runs (e.g. from a self-hosted runner) and fails
+# loudly when the fetch fails or no data changes, instead of passing silently.
 
 on:
-  schedule:
-    - cron: '0 11 * * *'  # 6am EST every day
   workflow_dispatch:
 
 jobs:

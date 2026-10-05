@@ -85,7 +85,7 @@ def merge(existing, new, key):
 def load_existing(path):
     if not os.path.exists(path):
         return None
-    return normalize(pd.read_csv(path, dtype={'GAME_ID': str}))
+    return normalize(pd.read_csv(path, dtype={'GAME_ID': str}, low_memory=False))
 
 
 def seasons_to_fetch(existing_team, since=None, today=None):

@@ -24,3 +24,36 @@ Data: 2023-24 through 2026-03-03 (3,213 games with complete features; 1,607 held
 The expected logistic numbers (~0.714 Elo, ~0.722 all features) reproduce exactly. The real
 XGBoost numbers: the original depth-5 model is clearly worse than Elo alone (log loss 0.651),
 and the regularized depth-2 model beats Elo slightly but loses to logistic regression.
+
+## Phase 1: Data freshness
+
+**Cause of the stale data.** The data stopped at 2026-03-03. All 62 scheduled runs from
+2026-03-05 to 2026-05-05 were marked successful, but each spent ~4 minutes in ingestion
+(three seasons x 60s timeout + sleeps), fetched nothing, exited 0, and had nothing to commit.
+GitHub then disabled the schedule for repository inactivity. The run logs had expired (HTTP 410),
+so this comes from the per-step timings. Two separate problems:
+
+1. The hand-written browser headers in `ingest.py` now make stats.nba.com hang until timeout,
+   even from a home connection. nba_api's default headers work (2025-26 season in 1.3s).
+2. GitHub-hosted runners are blocked regardless. A manual run on 2026-10-05 with the fixed
+   headers timed out on every attempt (run 37254192221) and now correctly ends as a failure.
+
+**Fix.** Incremental ingest with default headers, retries, and a non-zero exit on failure;
+local `scripts/refresh.sh` / `.bat`; the workflow is manual-only.
+
+**Result.** Data now reaches 2026-04-12, the last day of the 2025-26 regular season (today is
+2026-10-04, so there are no newer regular-season games). Playoff games are not ingested; the
+model is regular-season only.
+
+New baseline on the refreshed data (3,523 games, 1,762 held out, 2025-01-29 to 2026-04-12).
+All later experiments compare against this until the data changes again:
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7377 | 67.99% | 0.5978 | 0.2056 |
+| **All features (logistic), shipped** | **0.7437** | **68.39%** | **0.5914** | **0.2032** |
+| XGBoost depth 5 | 0.7173 | 66.00% | 0.6246 | 0.2152 |
+| XGBoost depth 2 | 0.7352 | 67.54% | 0.5983 | 0.2060 |
+
+The held-out window moved later, so these numbers are not comparable with Phase 0.
+Late-season games are easier to predict (last fold AUC ~0.82), which lifts all models.
