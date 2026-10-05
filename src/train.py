@@ -1,5 +1,6 @@
 import os
 import joblib
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.linear_model import LogisticRegression
@@ -7,7 +8,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from data_pipeline import load_games
 from elo import ELO_GRID, elo_tables, tune_elo
-from evaluation import walk_forward, score, print_table
+from evaluation import walk_forward, score, print_table, score_regression, favorite_disagreement
 import spread_model
 from matchups import FEATURES
 
@@ -83,7 +84,8 @@ def train_model():
     games = load_games()
 
     # 1. Walk-forward evaluation: every model is always tested on games after its training data
-    preds = walk_forward(df, fold_tuned_elo(CANDIDATES, games), verbose=True)
+    tables = elo_tables(games, ELO_GRID)
+    preds = walk_forward(df, fold_tuned_elo(CANDIDATES, tables=tables), verbose=True)
 
     # 2. Score each model on all held-out games, plus per-fold AUC spread
     results = score(preds, CANDIDATES)
@@ -111,6 +113,36 @@ def train_model():
             mres.to_csv('data/market_metrics.csv', index=False)
             print_table(mres[['model', 'roc_auc', 'accuracy', 'log_loss', 'brier']],
                         f"Held-out games with a Kalshi price ({len(both)})")
+
+    # 3c. Spread: same folds, same per-fold Elo tuning; baselines are the training-period average
+    #     home margin and a margin regression on ELO_DIFF alone
+    cfg = spread_model.TARGETS['spread']
+    fold_sigma = {}
+
+    def spread_fit(train, test):
+        fitted = spread_model.fit_target(cfg, train)
+        fold_sigma[test['GAME_DATE'].min()] = fitted.sigma
+        return fitted.predict(test)
+
+    spread_cands = {
+        'Average home margin': lambda tr, te: np.full(len(te), tr['MARGIN'].mean()),
+        'Elo-only spread': lambda tr, te: spread_model.make_ridge().fit(tr[['ELO_DIFF']], tr['MARGIN']).predict(te[['ELO_DIFF']]),
+        'Spread model': spread_fit,
+    }
+    sp = walk_forward(df, fold_tuned_elo(spread_cands, tables=tables, verbose=False))
+    first_date = sp.groupby('FOLD')['GAME_DATE'].transform('min')
+    sp['SIGMA'] = first_date.map(fold_sigma)
+    sres = score_regression(sp, list(spread_cands))
+    print_table(sres, f"Spread, walk-forward on {len(sp)} held-out games (points)")
+    dis = favorite_disagreement(preds.set_index('GAME_ID').loc[sp['GAME_ID'], shipped].values,
+                                sp['Spread model'].values, sp['TARGET'].values)
+    print(f"Win probability and spread pick different favorites in {dis['disagree']} of {dis['games']} games "
+          f"({dis['disagree_share']:.1%}); median |p - 50%| {dis['median_prob_gap_from_50']:.1%}, "
+          f"median |margin| {dis['median_abs_margin']:.1f} pts")
+    sp.rename(columns={'Spread model': 'MODEL_MARGIN', 'Elo-only spread': 'ELO_MARGIN',
+                       'Average home margin': 'AVG_MARGIN'}).to_csv('data/test_spread_predictions.csv', index=False)
+    sres.to_csv('data/spread_metrics.csv', index=False)
+    pd.Series(dis).to_csv('data/spread_disagreement.csv', header=['value'])
 
     # 4. Refit the shipped model on every game for live predictions
     make, cols = CANDIDATES[shipped]

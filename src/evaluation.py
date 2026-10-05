@@ -31,7 +31,7 @@ def walk_forward(df, candidates, fold_starts=FOLD_STARTS, verbose=False, test_fr
     folds = []
     for k, (start, end) in enumerate(zip(edges[:-1], edges[1:])):
         train, test = df.iloc[:start], df.iloc[start:end]
-        out = test[['GAME_ID', 'GAME_DATE', 'TARGET']].copy()
+        out = test[['GAME_ID', 'GAME_DATE', 'TARGET'] + (['MARGIN'] if 'MARGIN' in test else [])].copy()
         out['FOLD'] = k
         for name, spec in candidates.items():
             if callable(spec):
@@ -82,3 +82,30 @@ def paired_delta(preds, base, other):
     d = per_game_log_loss(preds['TARGET'], preds[other]) - per_game_log_loss(preds['TARGET'], preds[base])
     folds_better = sum(d[preds['FOLD'] == k].mean() < 0 for k in sorted(preds['FOLD'].unique()))
     return d.mean(), d.std(ddof=1) / np.sqrt(len(d)), folds_better, preds['FOLD'].nunique()
+
+
+def score_regression(preds, names, target='MARGIN'):
+    """Mean absolute error, RMSE and bias (mean prediction minus actual) on held-out games."""
+    rows = []
+    for name in names:
+        err = preds[name] - preds[target]
+        fold_mae = [float(np.mean(np.abs(g[name] - g[target]))) for _, g in preds.groupby('FOLD')]
+        rows.append({'model': name, 'mae': float(np.mean(np.abs(err))), 'rmse': float(np.sqrt(np.mean(err ** 2))),
+                     'bias': float(np.mean(err)), 'mae_min_fold': min(fold_mae), 'mae_max_fold': max(fold_mae)})
+    return pd.DataFrame(rows)
+
+
+def favorite_disagreement(home_prob, home_margin, outcome_home_win=None):
+    """How often the win probability and the spread pick different favorites, and by how much."""
+    home_prob, home_margin = np.asarray(home_prob), np.asarray(home_margin)
+    dis = (home_prob > 0.5) != (home_margin > 0)
+    out = {'games': int(len(dis)), 'disagree': int(dis.sum()), 'disagree_share': float(dis.mean()),
+           'median_prob_gap_from_50': float(np.median(np.abs(home_prob[dis] - 0.5))) if dis.any() else np.nan,
+           'max_prob_gap_from_50': float(np.max(np.abs(home_prob[dis] - 0.5))) if dis.any() else np.nan,
+           'median_abs_margin': float(np.median(np.abs(home_margin[dis]))) if dis.any() else np.nan,
+           'max_abs_margin': float(np.max(np.abs(home_margin[dis]))) if dis.any() else np.nan}
+    if outcome_home_win is not None and dis.any():
+        y = np.asarray(outcome_home_win)[dis]
+        out['prob_right_when_disagree'] = float(((home_prob[dis] > 0.5) == y).mean())
+        out['spread_right_when_disagree'] = float(((home_margin[dis] > 0) == y).mean())
+    return out

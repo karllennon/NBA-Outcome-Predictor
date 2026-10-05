@@ -354,3 +354,32 @@ the gaps (282 reports added; 18 tips still have no report 30+ minutes before tip
 of team-games by a pre-tip-off report went from 97.6% to 99.3%. No leakage was involved (the
 fallback only uses earlier games). Effect on the shipped model: log loss 0.5808 -> 0.5795,
 AUC 0.7570 -> 0.7579.
+
+## Spread model
+
+A second output next to the win probability: the predicted home point margin from a Ridge
+regression on the same features (`src/spread_model.py`, the Phase 5.2 margin regression moved
+into a shared module). The win probability still comes from the logistic classifier. The spread
+is shown in betting convention: the home line is minus the predicted margin, so "home -4.5"
+means the home team is predicted to win by 4.5 (displayed to the nearest 0.5, favorite first,
+e.g. "BOS -3.5").
+
+### Accuracy (walk-forward, same 4 folds, Elo re-tuned per fold; 1,762 held-out games)
+
+| Predicted margin | MAE (pts) | RMSE (pts) | Bias (pts) | MAE by fold |
+|---|---|---|---|---|
+| Always the training-period average home margin | 13.08 | 16.40 | +0.08 | 12.4-14.7 |
+| Elo-only spread (margin regressed on ELO_DIFF) | 11.28 | 14.44 | +0.18 | 10.8-11.8 |
+| **Spread model (all features)** | **10.95** | **14.00** | **+0.19** | 10.6-11.6 |
+
+Spread model vs Elo-only: MAE -0.33 pts (SE 0.07), better in all 4 folds; vs the average:
+-2.13 pts (SE 0.16). For scale, the average absolute home margin in these games was 13.2 points,
+so a typical game still lands about 11 points from the prediction.
+
+### Spread vs win probability
+
+They pick different favorites in 59 of 1,762 games (3.3%). All are near toss-ups: in those
+games the win probability is at most 6.6 points from 50% (median 1.5) and the predicted margin
+at most 1.8 points (median 0.4). When they disagree, the win probability picked the winner in
+52.5% and the spread in 47.5% (59 games, no real difference). The dashboard marks these games as
+close to a toss-up.

@@ -28,3 +28,6 @@ data/market_snapshots.csv
 data/market_spread_history.csv
 data/market_spread_snapshots.csv
 data/prediction_log.csv
+data/test_spread_predictions.csv
+data/spread_metrics.csv
+data/spread_disagreement.csv
