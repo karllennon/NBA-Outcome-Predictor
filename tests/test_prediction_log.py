@@ -15,7 +15,7 @@ def test_log_is_append_only_and_scores_the_last_pregame_row(tmp_path):
     path = tmp_path / 'log.csv'
     games = tmp_path / 'games.csv'
     pd.DataFrame({'GAME_ID': ['0022500883', '0022500883'], 'MATCHUP': ['CHA vs. DAL', 'DAL @ CHA'],
-                  'WL': ['W', 'L']}).to_csv(games, index=False)
+                  'WL': ['W', 'L'], 'PLUS_MINUS': [8, -8]}).to_csv(games, index=False)
 
     pl.append([_row('0022500883', 0.60, 0.80)], path)
     first = pd.read_csv(path)
