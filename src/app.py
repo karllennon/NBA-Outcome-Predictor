@@ -10,7 +10,6 @@ sys.path.append(os.path.dirname(__file__))
 from inference import GamePredictor
 from matchups import FEATURES
 from train import feature_weights
-from nba_api.stats.static import teams as nba_teams_static
 from sklearn.metrics import roc_auc_score, confusion_matrix
 import matplotlib.pyplot as plt
 import matplotlib
@@ -23,11 +22,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Name mismatches between NBA API and our data
-TEAM_NAME_MAP = {
-    'Los Angeles Clippers': 'LA Clippers'
-}
 
 @st.cache_resource(ttl=900)
 def load_predictor():
@@ -52,26 +46,24 @@ def get_rotation(team_name):
 def get_report_out(team_name):
     return set(load_predictor().report_out(team_name) or [])
 
+@st.cache_data(ttl=600)
 def get_todays_games():
+    """(home, away) for today's regular-season and playoff games, or None."""
     try:
-        from nba_api.stats.endpoints import scoreboardv2
-        import time
-        time.sleep(3)
-        sb = scoreboardv2.ScoreboardV2()
-        games = sb.get_data_frames()[0]
-        if games.empty:
-            return None
-        all_teams = pd.DataFrame(nba_teams_static.get_teams())
-        team_map = all_teams.set_index('id')['full_name'].to_dict()
-        matchups = []
-        for _, game in games.iterrows():
-            home = TEAM_NAME_MAP.get(team_map.get(game['HOME_TEAM_ID']), team_map.get(game['HOME_TEAM_ID']))
-            away = TEAM_NAME_MAP.get(team_map.get(game['VISITOR_TEAM_ID']), team_map.get(game['VISITOR_TEAM_ID']))
-            if home and away:
-                matchups.append((home, away))
-        return matchups if matchups else None
+        from schedule import games_on
+        games = games_on()
+        games = games[games['GAME_ID'].str[:3].isin(['002', '004'])]
+        matchups = [(h, a) for h, a in zip(games['HOME_TEAM'], games['AWAY_TEAM']) if h and a]
+        return matchups or None
     except Exception:
         return None
+
+
+@st.cache_data(ttl=600, show_spinner="Building today's slate (model, injury report, Kalshi)...")
+def get_slate():
+    """Model vs market for today's games; logs pre-tip-off predictions (at most every 10 min)."""
+    from daily_slate import build_slate
+    return build_slate(predictor=load_predictor())
 
 def run_prediction(home_team, away_team, home_injuries, away_injuries):
     result = load_predictor().predict(home_team, away_team, home_injuries, away_injuries)
@@ -88,15 +80,24 @@ def run_prediction(home_team, away_team, home_injuries, away_injuries):
 st.sidebar.image("https://upload.wikimedia.org/wikipedia/en/thumb/0/03/National_Basketball_Association_logo.svg/200px-National_Basketball_Association_logo.svg.png", width=80)
 st.sidebar.title("NBA Predictor")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("Navigate", ["🏀 Today's Slate", "📊 Backtest Results", "🤖 Model Performance"])
+page = st.sidebar.radio("Navigate", ["🏀 Today's Slate", "💹 Model vs Market", "📈 Track Record",
+                                     "📊 Backtest Results", "🤖 Model Performance"])
 st.sidebar.markdown("---")
 try:
     _state = pd.read_csv('data/team_state.csv', parse_dates=['LAST_GAME_DATE'])
     st.sidebar.caption(f"Data through: {_state['LAST_GAME_DATE'].max():%b %d, %Y}")
     _metrics = pd.read_csv('data/test_metrics.csv').set_index('model')
     _shipped = _metrics[_metrics['shipped']].index[0]
-    st.sidebar.caption(f"Model: {_shipped} | Held-out AUC: {_metrics.loc[_shipped, 'roc_auc']:.3f} "
-                       f"(Elo only: {_metrics.loc['Elo only (logistic)', 'roc_auc']:.3f})")
+    _elo = _metrics.loc['Elo only (logistic)']
+    st.sidebar.caption(f"Model: {_shipped}")
+    st.sidebar.caption(f"Walk-forward held-out: log loss {_metrics.loc[_shipped, 'log_loss']:.3f}, "
+                       f"AUC {_metrics.loc[_shipped, 'roc_auc']:.3f} "
+                       f"(Elo only: {_elo['log_loss']:.3f} / {_elo['roc_auc']:.3f})")
+    if os.path.exists('data/market_metrics.csv'):
+        _mm = pd.read_csv('data/market_metrics.csv').set_index('model')
+        st.sidebar.caption(f"Vs Kalshi on {int(_mm['games'].iloc[0])} games: model log loss "
+                           f"{_mm.loc[_shipped, 'log_loss']:.3f}, market "
+                           f"{_mm.loc['Kalshi pre-tip-off price', 'log_loss']:.3f}")
 except (FileNotFoundError, KeyError):
     st.sidebar.caption("Run data_pipeline.py and train.py to populate metrics")
 
@@ -110,13 +111,7 @@ if page == "🏀 Today's Slate":
 
     all_teams = get_all_teams()
 
-    todays_games = None
-
-    # Disabled until NBA API issue is resolved
-    # if 'todays_games' not in st.session_state:
-    #     with st.spinner("Loading today's schedule..."):
-    #         st.session_state.todays_games = get_todays_games()
-    # todays_games = st.session_state.todays_games
+    todays_games = get_todays_games()
 
     if todays_games:
         st.success(f"Found {len(todays_games)} games today")
@@ -126,7 +121,7 @@ if page == "🏀 Today's Slate":
         home_team = todays_games[idx][0]
         away_team = todays_games[idx][1]
     else:
-        st.info("Live schedule unavailable — select teams manually")
+        st.info("No regular-season games today (or the schedule is unavailable). Select teams manually.")
         col1, col2 = st.columns(2)
         with col1:
             home_team = st.selectbox("🏠 Home Team", all_teams, index=all_teams.index("Boston Celtics"))
@@ -140,9 +135,13 @@ if page == "🏀 Today's Slate":
     home_report_out, away_report_out = get_report_out(home_team), get_report_out(away_team)
 
     predictor = load_predictor()
-    if predictor.report is not None:
-        st.caption(f"Official injury report: {pd.Timestamp(predictor.report['REPORT_TIME'].max()):%b %d, %I:%M %p} ET. "
+    report_time = None if predictor.report is None else pd.Timestamp(predictor.report['REPORT_TIME'].max())
+    if report_time is not None and report_time.date() == datetime.now().date():
+        st.caption(f"Official injury report: {report_time:%b %d, %I:%M %p} ET. "
                    "Players listed Out are pre-checked; uncheck or check boxes to override.")
+    elif report_time is not None:
+        st.caption(f"No injury report for today's games yet (latest archived: {report_time:%b %d, %Y}). "
+                   "Check injured players manually.")
     else:
         msg = f" ({predictor.report_error})" if predictor.report_error else ""
         st.caption(f"No official injury report available{msg}. Check injured players manually.")
@@ -244,12 +243,89 @@ if page == "🏀 Today's Slate":
                 st.error(f"Prediction failed: {e}")
 
 # ─────────────────────────────────────────────
+# MODEL VS MARKET
+# ─────────────────────────────────────────────
+elif page == "💹 Model vs Market":
+    st.title("💹 Model vs Market")
+    st.markdown("Home-team win probability from the model and from Kalshi's game market "
+                "(midpoint of the YES bid and ask). Each pre-tip-off prediction is saved to "
+                "`data/prediction_log.csv`.")
+    try:
+        slate = get_slate()
+    except Exception as e:
+        slate = None
+        st.error(f"Could not build today's slate: {e}")
+    if slate is not None and slate.empty:
+        st.info("No regular-season or playoff games today.")
+    elif slate is not None:
+        from daily_slate import slate_table
+        st.dataframe(slate_table(slate), use_container_width=True, hide_index=True)
+        st.caption("Highlighted rows: model and market differ by 5 points or more. Smaller gaps are within "
+                   "Kalshi's fees and the model's normal error. On held-out 2025-26 games the market's "
+                   "pre-tip-off price was more accurate than this model (see Model Performance), so a large "
+                   "gap is more often the market knowing something (late scratches, rest) than an edge.")
+
+# ─────────────────────────────────────────────
+# TRACK RECORD
+# ─────────────────────────────────────────────
+elif page == "📈 Track Record":
+    import prediction_log
+    st.title("📈 Live Track Record")
+    st.markdown("Predictions logged before tip-off, scored once results are ingested. "
+                "For each game the last prediction made before tip-off counts.")
+    record = prediction_log.track_record()
+    if record.empty:
+        st.info("No finished games with a logged prediction yet. Predictions are logged by "
+                "`python src/daily_slate.py` (also run by the refresh scripts) and by the "
+                "Model vs Market page; results arrive with `python src/ingest.py`.")
+    else:
+        from sklearn.metrics import log_loss, brier_score_loss
+        rows = []
+        for name, col in [('Model', 'MODEL_HOME_PROB'), ('Kalshi', 'MARKET_HOME_PROB')]:
+            r = record.dropna(subset=[col])
+            if len(r):
+                p = r[col].clip(1e-6, 1 - 1e-6)
+                rows.append({'Source': name, 'Games': len(r),
+                             'Accuracy': ((p > 0.5) == r['HOME_WIN']).mean(),
+                             'Log loss': log_loss(r['HOME_WIN'], p, labels=[0, 1]),
+                             'Brier': brier_score_loss(r['HOME_WIN'], p)})
+        st.dataframe(pd.DataFrame(rows).set_index('Source').style.format(
+            {'Accuracy': '{:.1%}', 'Log loss': '{:.4f}', 'Brier': '{:.4f}'}))
+        both = record.dropna(subset=['MARKET_HOME_PROB'])
+        if len(both) < len(record):
+            st.caption(f"Kalshi price available for {len(both)} of {len(record)} games.")
+
+        st.subheader("Running log loss")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        for name, col in [('Model', 'MODEL_HOME_PROB'), ('Kalshi', 'MARKET_HOME_PROB')]:
+            m = prediction_log.running_metrics(record, col)
+            if len(m):
+                ax.plot(m['games'], m['log_loss'], label=name)
+        ax.axhline(np.log(2), color='grey', linestyle=':', label='Coin flip (0.693)')
+        ax.set_xlabel('Games')
+        ax.set_ylabel('Cumulative log loss')
+        ax.legend()
+        st.pyplot(fig)
+        plt.close()
+
+        st.subheader("Calibration (live predictions)")
+        bins = [0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0]
+        calib = record.assign(bucket=pd.cut(record['MODEL_HOME_PROB'], bins=bins, include_lowest=True))
+        calib = calib.groupby('bucket', observed=True).agg(
+            games=('HOME_WIN', 'size'), predicted=('MODEL_HOME_PROB', 'mean'), actual=('HOME_WIN', 'mean'))
+        st.dataframe(calib.style.format({'predicted': '{:.1%}', 'actual': '{:.1%}'}))
+        if len(record) < 100:
+            st.caption(f"Only {len(record)} games so far: these numbers will move a lot until a few "
+                       "hundred games are in.")
+
+# ─────────────────────────────────────────────
 # PAGE 2: BACKTEST RESULTS
 # ─────────────────────────────────────────────
 elif page == "📊 Backtest Results":
     st.title("📊 Backtest Results")
     st.markdown("Walk-forward held-out games only: each game was predicted by a model trained on earlier games. "
-                "No betting simulation, since the data has no historical odds.")
+                "No betting simulation; the comparison with Kalshi's market prices is on the "
+                "Model Performance page.")
     st.markdown("---")
 
     try:
@@ -304,6 +380,19 @@ elif page == "🤖 Model Performance":
 
     try:
         from sklearn.metrics import roc_curve
+
+        metrics = pd.read_csv('data/test_metrics.csv')
+        st.subheader("Walk-forward results (held-out games only)")
+        st.dataframe(metrics.drop(columns=['shipped']).set_index('model').style.format('{:.4f}'))
+        st.caption("Each test block is predicted by a model trained only on earlier games, with Elo "
+                   "settings tuned on those training games. Lower log loss is better.")
+        if os.path.exists('data/market_metrics.csv'):
+            mm = pd.read_csv('data/market_metrics.csv')
+            st.subheader(f"Against the market ({int(mm['games'].iloc[0])} held-out games, "
+                         f"{mm['first_game'].iloc[0]} to {mm['last_game'].iloc[0]})")
+            st.dataframe(mm[['model', 'roc_auc', 'accuracy', 'log_loss', 'brier']].set_index('model')
+                         .style.format('{:.4f}'))
+            st.caption("Kalshi's price at tip-off beats the model on these games.")
 
         test_preds = load_test_predictions()
         model = load_model()

@@ -297,3 +297,19 @@ rating adds nothing beyond Elo and rolling plus/minus.
 Final shipped model (Phases 0-6), walk-forward on 1,762 held-out games:
 **ROC-AUC 0.7568, accuracy 70.49%, log loss 0.5810, Brier 0.1986** (Elo only: 0.7421 / 0.5947).
 On the 1,223 of those games with a Kalshi price: model log loss 0.5824 vs market 0.5697.
+
+## Phase 7: Dashboard
+
+No model change; these features can only be measured once games are played.
+- **Model vs Market** page (and `python src/daily_slate.py`): today's regular-season games
+  with model probability, Kalshi probability and the gap, rows highlighted at 5+ points, with
+  a note that smaller gaps are within fees and noise and that the market has been the more
+  accurate of the two.
+- **Prediction log**: every pre-tip-off prediction is appended to `data/prediction_log.csv`
+  (timestamp, model and market probability, bid/ask, model version hash, players counted out,
+  and the full feature row). Rows are never rewritten. The refresh scripts run the slate daily.
+- **Track Record** page: joins the last pre-tip-off prediction for each game to the result and
+  shows accuracy, log loss, Brier score, running log loss and calibration for the model and the
+  market. It is empty until the 2026-27 regular season starts (2026-10-20).
+- Sidebar and Model Performance page read the latest walk-forward metrics and the
+  model-vs-market comparison written by `train.py`.

@@ -16,5 +16,6 @@ echo "=== Refresh started $(date) ==="
 "$PY" -u src/train.py
 # Archive the latest injury report and today's Kalshi prices (non-fatal: offseason or outage)
 "$PY" -u src/injury_reports.py || echo "[!] injury report fetch failed"
-"$PY" -u src/market_odds.py || echo "[!] Kalshi snapshot failed"
+# Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)
+"$PY" -u src/daily_slate.py || echo "[!] slate / prediction log failed"
 echo "=== Refresh finished $(date) ==="
