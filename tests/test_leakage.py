@@ -131,3 +131,13 @@ def test_injury_reports_after_tipoff_are_ignored(raw):
     # and the report does matter when it is in time
     in_time = _report([(day + pd.Timedelta(hours=18), day, team, f'{last}, {first}', 'Out')])
     assert loss(in_time) > base
+
+
+def test_elo_tuning_uses_only_games_before_cutoff(raw):
+    from elo import elo_tables, tune_elo
+    games, players = raw
+    g2, _ = perturb(games, players)
+    grid = {'k_factor': [10, 20, 30], 'home_advantage': [25, 100], 'season_carryover': [0.5]}
+    a, _ = tune_elo(elo_tables(games, grid), CUTOFF)
+    b, _ = tune_elo(elo_tables(g2, grid), CUTOFF)
+    assert a == b

@@ -41,41 +41,22 @@ class NBAEloCalculator:
         """
         df = df.copy()
         df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
-
-        # One row per game: the earliest date for that GAME_ID, so groups are processed chronologically
-        game_order = (df.groupby('GAME_ID')
-                        .agg(GAME_DATE=('GAME_DATE', 'min'), SEASON_ID=('SEASON_ID', 'first'))
-                        .sort_values(['GAME_DATE'])
-                        .reset_index())
-
-        groups = {gid: g for gid, g in df.groupby('GAME_ID')}
+        games = self._pair_games(df)
         results = {}
         current_season = None
 
-        for _, game in game_order.iterrows():
-            if current_season is not None and game['SEASON_ID'] != current_season:
+        for gid, season, h_id, a_id, home_win, margin, complete in games.itertuples(index=False):
+            if current_season is not None and season != current_season:
                 self._regress_to_mean()
-            current_season = game['SEASON_ID']
-
-            group = groups[game['GAME_ID']]
-            if len(group) != 2:
+            current_season = season
+            if not complete:
                 continue  # Skip incomplete data
 
-            home = group[group['MATCHUP'].str.contains('vs.')]
-            away = group[group['MATCHUP'].str.contains('@')]
-            if len(home) != 1 or len(away) != 1:
-                continue
-            home, away = home.iloc[0], away.iloc[0]
-
-            h_id, a_id = home['TEAM_ID'], away['TEAM_ID']
             h_elo, a_elo = self._get_elo(h_id), self._get_elo(a_id)
 
             # Pre-game ratings are the model features
-            results[(game['GAME_ID'], h_id)] = h_elo
-            results[(game['GAME_ID'], a_id)] = a_elo
-
-            home_win = 1 if home['WL'] == 'W' else 0
-            margin = abs(home['PLUS_MINUS'])
+            results[(gid, h_id)] = h_elo
+            results[(gid, a_id)] = a_elo
 
             # Home-court advantage enters the expectation, not the stored rating
             exp_home = self.calculate_expected_score(h_elo + self.home_advantage, a_elo)
@@ -93,7 +74,79 @@ class NBAEloCalculator:
         df['PRE_GAME_ELO'] = [results.get((g, t), np.nan) for g, t in zip(df['GAME_ID'], df['TEAM_ID'])]
         return df
 
+    @staticmethod
+    def _pair_games(df):
+        """
+        One row per GAME_ID in chronological order (earliest date for that GAME_ID):
+        GAME_ID, SEASON_ID, home TEAM_ID, away TEAM_ID, home win, margin, complete.
+        A game is complete when it has exactly one home row and one away row.
+        """
+        order = (df.groupby('GAME_ID')
+                   .agg(GAME_DATE=('GAME_DATE', 'min'), SEASON_ID=('SEASON_ID', 'first'),
+                        ROWS=('TEAM_ID', 'size'))
+                   .sort_values(['GAME_DATE'], kind='stable')
+                   .reset_index())
+        is_home = df['MATCHUP'].str.contains('vs.', regex=False)
+        is_away = df['MATCHUP'].str.contains('@', regex=False)
+        home = df[is_home].drop_duplicates('GAME_ID', keep=False).set_index('GAME_ID')
+        away = df[is_away].drop_duplicates('GAME_ID', keep=False).set_index('GAME_ID')
+        out = order.join(home[['TEAM_ID', 'WL', 'PLUS_MINUS']], on='GAME_ID')
+        out = out.join(away[['TEAM_ID']].rename(columns={'TEAM_ID': 'AWAY_ID'}), on='GAME_ID')
+        out['COMPLETE'] = (out['ROWS'] == 2) & out['TEAM_ID'].notna() & out['AWAY_ID'].notna()
+        return pd.DataFrame({
+            'GAME_ID': out['GAME_ID'], 'SEASON_ID': out['SEASON_ID'],
+            'H_ID': out['TEAM_ID'].fillna(-1).astype('int64'),
+            'A_ID': out['AWAY_ID'].fillna(-1).astype('int64'),
+            'HOME_WIN': (out['WL'] == 'W').astype(int),
+            'MARGIN': out['PLUS_MINUS'].abs().fillna(0),
+            'COMPLETE': out['COMPLETE'],
+        })
+
     def current_ratings(self):
         """Post-game Elo after the most recent game, for live predictions."""
         return pd.DataFrame({'TEAM_ID': list(self.elo_dict.keys()),
                              'CURRENT_ELO': list(self.elo_dict.values())})
+
+
+# Grid for tuning K-factor, home advantage and season carryover (RESULTS.md, Phase 5)
+ELO_GRID = {'k_factor': [5, 7.5, 10, 12.5, 15, 20, 25, 30],
+            'home_advantage': [0, 25, 50, 75, 100],
+            'season_carryover': [0.2, 0.3, 0.4, 0.5, 0.6, 0.75, 0.9]}
+
+
+def elo_tables(games, grid=None, **fixed):
+    """
+    For every Elo setting in the grid: per-game home-minus-away pre-game Elo (ELO_DIFF) and
+    Elo's own home win probability with home advantage (ELO_PROB), indexed by GAME_ID.
+    Returns {setting tuple: (params dict, DataFrame)}.
+    """
+    import itertools
+    grid = grid or ELO_GRID
+    is_home = games['MATCHUP'].str.contains('vs.', regex=False).values
+    home = games[is_home][['GAME_ID', 'GAME_DATE', 'WL']]
+    tables = {}
+    for combo in itertools.product(*grid.values()):
+        params = {**fixed, **dict(zip(grid, combo))}
+        d = NBAEloCalculator(**params).process_season(games)
+        h = d[is_home][['GAME_ID', 'PRE_GAME_ELO']]
+        a = d[~is_home][['GAME_ID', 'PRE_GAME_ELO']]
+        t = home.merge(h, on='GAME_ID').merge(a, on='GAME_ID', suffixes=('_H', '_A'))
+        t['ELO_DIFF'] = t['PRE_GAME_ELO_H'] - t['PRE_GAME_ELO_A']
+        t['ELO_PROB'] = 1 / (1 + 10 ** (-(t['ELO_DIFF'] + params['home_advantage']) / 400))
+        t['Y'] = (t['WL'] == 'W').astype(int)
+        t['GAME_DATE'] = pd.to_datetime(t['GAME_DATE'])
+        tables[combo] = (params, t.dropna(subset=['ELO_DIFF']).set_index('GAME_ID'))
+    return tables
+
+
+def tune_elo(tables, before):
+    """Setting with the lowest log loss of Elo's own probabilities on games before `before`
+    (training games only). Returns (params, ELO_DIFF series indexed by GAME_ID)."""
+    best = None
+    for params, t in tables.values():
+        tr = t[t['GAME_DATE'] < pd.Timestamp(before)]
+        p = tr['ELO_PROB'].clip(1e-6, 1 - 1e-6)
+        ll = -(tr['Y'] * np.log(p) + (1 - tr['Y']) * np.log(1 - p)).mean()
+        if best is None or ll < best[0]:
+            best = (ll, params, t['ELO_DIFF'])
+    return best[1], best[2]

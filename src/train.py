@@ -5,6 +5,7 @@ import xgboost as xgb
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from elo import ELO_GRID, elo_tables, tune_elo
 from evaluation import walk_forward, score, print_table
 from matchups import FEATURES
 
@@ -42,12 +43,37 @@ def feature_weights(model):
     return pd.Series(model[-1].coef_[0], index=FEATURES)
 
 
+def fold_tuned_elo(candidates, games):
+    """
+    Wraps each candidate so that, inside every walk-forward fold, ELO_DIFF is recomputed with
+    Elo settings tuned on that fold's training games only. The shipped ELO_PARAMS were tuned on
+    all games, so evaluating with them would let test games influence the Elo settings.
+    """
+    tables = elo_tables(games, ELO_GRID)
+    cache = {}
+
+    def wrap(make, cols):
+        def fit_predict(train, test):
+            start = test['GAME_DATE'].min()
+            if start not in cache:
+                params, diff = tune_elo(tables, start)
+                cache[start] = diff
+                print(f"  Elo tuned on games before {start.date()}: {params}")
+            tr = train.assign(ELO_DIFF=train['GAME_ID'].map(cache[start]))
+            te = test.assign(ELO_DIFF=test['GAME_ID'].map(cache[start]))
+            return make().fit(tr[cols], tr['TARGET']).predict_proba(te[cols])[:, 1]
+        return fit_predict
+
+    return {name: wrap(make, cols) for name, (make, cols) in candidates.items()}
+
+
 def train_model():
     df = pd.read_csv('data/final_training_set.csv', parse_dates=['GAME_DATE'])
     df = df.sort_values('GAME_DATE').reset_index(drop=True)
+    games = pd.read_csv('data/raw_nba_data.csv', parse_dates=['GAME_DATE'])
 
     # 1. Walk-forward evaluation: every model is always tested on games after its training data
-    preds = walk_forward(df, CANDIDATES, verbose=True)
+    preds = walk_forward(df, fold_tuned_elo(CANDIDATES, games), verbose=True)
 
     # 2. Score each model on all held-out games, plus per-fold AUC spread
     results = score(preds, CANDIDATES)

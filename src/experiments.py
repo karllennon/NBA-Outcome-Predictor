@@ -139,6 +139,33 @@ def market_comparison(preds_path='data/test_predictions.csv', market_path='data/
     return results, df
 
 
+# ------------------------------------------------------------------ Phase 5
+
+@experiment
+def elo_tuning():
+    from elo import elo_tables, tune_elo, ELO_GRID
+    games, _ = raw()
+    tables = elo_tables(games, ELO_GRID)
+    base = shipped_dataset()
+    chosen = []
+
+    def tuned(train, test):
+        params, diff = tune_elo(tables, test['GAME_DATE'].min())   # training games only
+        chosen.append((test['GAME_DATE'].min().date(), params))
+        tr, te = train.copy(), test.copy()
+        tr['ELO_DIFF'] = tr['GAME_ID'].map(diff)
+        te['ELO_DIFF'] = te['GAME_ID'].map(diff)
+        model = make_logistic().fit(tr[FEATURES], tr['TARGET'])
+        return model.predict_proba(te[FEATURES])[:, 1]
+
+    results = compare({'Before (K=20, HCA=100, carryover=0.75)': dataset(elo_params={}, injury_params=data_pipeline.INJURY_PARAMS, reports=load_injury_reports()),
+                       'Elo tuned per fold on training games': (base, tuned)}, 'Elo tuning')
+    for start, params in chosen:
+        print(f"  fold starting {start}: {params}")
+    print(f"  tuned on all games (for shipping): {tune_elo(tables, '2100-01-01')[0]}")
+    return results
+
+
 # replacement_boosts and minutes_weighting were tested here and their switches removed after
 # the results (RESULTS.md, Phase 3): boosts hurt, minutes weighting did not help.
 

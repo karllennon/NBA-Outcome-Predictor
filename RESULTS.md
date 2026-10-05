@@ -181,3 +181,29 @@ also reflects late scratches and lineup news the model only partly sees.
 **The Odds API (optional item):** skipped. No `ODDS_API_KEY` is set in the environment or a
 `.env` file. Kalshi's free history covered the model-vs-market comparison for 2025-26; a key
 would add 2023-24 and 2024-25 sportsbook lines.
+
+## Phase 5: Model improvements
+
+### 5.1 Elo tuning (kept)
+
+K-factor, home advantage and between-season carryover are chosen by the log loss of Elo's own
+win probabilities on each fold's training games only (grid: K 5-30, home advantage 0-100 Elo
+points, carryover 0.2-0.9). `train.py` repeats this inside every fold, so its walk-forward
+numbers never use Elo settings that saw the test games; the shipped settings are tuned on all
+games. The Elo calculator was rewritten to pair games once (identical ratings, 0.07 s instead of
+8.7 s per pass) so the grid can be searched quickly.
+
+| Model (1,762 held-out games) | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only, before (K=20, HCA=100, carryover 0.75) | 0.7369 | 67.93% | 0.5984 | 0.2058 |
+| Elo only, tuned per fold | 0.7421 | 68.56% | 0.5947 | 0.2041 |
+| Before: all features, default Elo | 0.7514 | 69.69% | 0.5851 | 0.2004 |
+| **All features, Elo tuned per fold (kept)** | **0.7564** | **70.49%** | **0.5816** | **0.1989** |
+
+All features: log loss -0.0035 (SE 0.0011), better in 3 of 4 folds. Each fold picked K = 12.5,
+carryover 0.5 and home advantage 25-50; tuned on all games: K = 12.5, home advantage 50,
+carryover 0.5 (now `ELO_PARAMS` in `data_pipeline.py`, also used by live predictions for the
+offseason regression). Smaller K and stronger regression than the FiveThirtyEight defaults, and
+a home edge of 25-50 Elo points (about 54-57% at even strength), consistent with the smaller
+home-court advantage of recent seasons. A first, narrower grid chose values on its lower edges;
+it was widened before the result above.

@@ -6,13 +6,15 @@ computed the same way as the training features.
 from datetime import date
 import joblib
 import pandas as pd
-from data_pipeline import INJURY_PARAMS
+from data_pipeline import INJURY_PARAMS, ELO_PARAMS
+from elo import NBAEloCalculator
 from injuries import InjuryModel
 from matchups import FEATURES, injury_diff
 
 OFFSEASON_GAP_DAYS = 90       # longer gap than this means a new season has started
-SEASON_CARRYOVER = 0.75       # same regression the Elo calculator applies between seasons
-MEAN_ELO = 1505
+_ELO = NBAEloCalculator(**ELO_PARAMS)
+SEASON_CARRYOVER = _ELO.season_carryover   # same regression the training Elo applies between seasons
+MEAN_ELO = _ELO.mean_elo
 
 
 class GamePredictor:

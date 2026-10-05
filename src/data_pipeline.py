@@ -5,7 +5,9 @@ from injuries import InjuryModel
 from matchups import create_matchup_data
 
 # Settings for the shipped pipeline. experiments.py overrides these to test alternatives.
-ELO_PARAMS = {}
+# Elo settings tuned by log loss of Elo's own predictions (python src/experiments.py elo_tuning;
+# RESULTS.md, Phase 5). Re-tune after adding seasons.
+ELO_PARAMS = {'k_factor': 12.5, 'home_advantage': 50, 'season_carryover': 0.5}
 # Official injury reports: players listed Out on the last report before tip-off (falls back
 # to "missed the previous game" when no report covers the game). See RESULTS.md, Phase 2.
 INJURY_PARAMS = {"use_reports": True}
