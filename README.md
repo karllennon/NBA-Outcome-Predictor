@@ -1,7 +1,8 @@
 # NBA Outcome Predictor
 
-Predicts NBA game outcomes (home win probability) from Elo ratings, official injury reports,
-rolling team form, rest and travel, and compares each prediction with the Kalshi game market.
+Predicts NBA game outcomes (home win probability and point spread) from Elo ratings, official
+injury reports, rolling team form, rest and travel, and compares each prediction with the Kalshi
+game and spread markets (hypothetical paper trading only; not betting advice).
 Includes a Streamlit dashboard and a log of every live prediction with its track record.
 
 ## Model Performance
@@ -34,6 +35,44 @@ The official injury reports are the largest gain over Elo: on held-out games, ho
 in the bottom fifth of the injury differential and 73% in the top fifth (55% overall).
 
 Every experiment, including the ones that did not help, is in [RESULTS.md](RESULTS.md).
+
+## Predicted Spread
+
+Alongside the win probability, the model predicts the **point spread**: how many points the home
+team should win or lose by (a Ridge regression on the same features, `src/spread_model.py`). It
+is a separate output; the win probability still comes from the logistic classifier.
+
+**Reading the sign** (betting convention): the line is written for a team, and a **negative**
+number means that team is favored by that many points. "BOS -4.5" means Boston is predicted to
+win by about 4.5; "LAL +4.5" is the same game from the Lakers' side. Lines are rounded to the
+nearest 0.5. In the log and the CLI the home team's line is used, so a negative home line means
+the home team is favored.
+
+**Accuracy** (walk-forward, 1,762 held-out games): the predicted margin is off by **10.95
+points** on average (RMSE 14.0). That is better than an Elo-only spread (11.28) and than always
+predicting the average home margin (13.08), in all four test periods. A typical NBA game still
+lands about 11 points from any pre-game prediction. The spread's uncertainty (about 14 points)
+is close to calibrated: predictions of about a 60% chance to cover covered about 61% of the time.
+When the spread and the win probability pick different favorites (about 3% of games), the game is
+a toss-up and the dashboard says so.
+
+## Decisions (paper trading only)
+
+**Hypothetical analysis, not betting advice.** For each game with a Kalshi price, the dashboard,
+`python src/daily_slate.py` and the prediction log compare the model's chance with the market:
+
+- **Edge** = model chance - market midpoint - Kalshi fee (0.07 x P x (1 - P) per contract,
+  rounded up to the cent), in percentage points.
+- **Decision**: "Lean <team> <line>" for the spread, "Lean <team>" for the moneyline, when the
+  edge after fees is at least `MIN_EDGE_PTS` (5, in `src/decisions.py`); otherwise "No play".
+- Flags: "Likely winner, bad price" when a favored team costs more than its chance; a warning to
+  check late news when an edge is over 15 points or the injury report is newer than the price.
+- Every decision is logged before tip-off as a $1 **paper** trade (at the ask plus fee); the
+  Track Record page settles them once games finish. Nothing places orders and there is no trading
+  code. Under a few hundred trades, the results prove very little.
+
+The Kalshi market's own prices have been more accurate than this model on past games, so a large
+"edge" usually means the market knows something the model doesn't.
 
 ## Features
 - **Elo** with margin-of-victory scaling, home-court advantage and between-season regression.
@@ -78,7 +117,9 @@ src/
   experiments.py     # Every before/after experiment in RESULTS.md
   backtest.py        # Held-out metrics and calibration
   inference.py       # Feature row for an upcoming game (CLI, slate, dashboard)
-  market_odds.py     # Kalshi snapshots and pre-tip-off price history
+  spread_model.py    # Point-spread model and the config for other numeric targets
+  decisions.py       # Edges, fees and hypothetical lean / no-play decisions (no trading code)
+  market_odds.py     # Kalshi game and spread snapshots and pre-tip-off price history (local only)
   schedule.py        # Today's games and tip-off times
   daily_slate.py     # Today's model vs market, logs pre-tip-off predictions
   prediction_log.py  # Append-only prediction log and live track record
@@ -101,6 +142,10 @@ python src/predict.py           # one game from the command line
 streamlit run src/app.py        # dashboard
 python -m pytest tests          # tests
 python src/experiments.py --list  # rerun any experiment from RESULTS.md
+python src/market_odds.py --history          # local Kalshi moneyline history (git-ignored)
+python src/market_odds.py --spread-history   # local Kalshi spread lines (git-ignored, ~2 hours)
+python src/experiments.py spread_calibration # is the spread's uncertainty calibrated?
+python src/experiments.py paper_trades       # backtest the decision rules (local report)
 ```
 
 ## Refreshing Data
@@ -137,6 +182,11 @@ the fetch fails, or when no new games arrive between November and March.
 ## Dashboard
 `streamlit run src/app.py`: a dark, card-based dashboard with top navigation.
 
+- **Decision cards** (top of the Dashboard and Markets pages): one card per game with the model
+  spread and win probability, Kalshi's spread and moneyline prices, the model's chance for each,
+  a green "Lean ..." or gray "No play" badge with the edge, a one-line reason, flags and warnings.
+  A toggle shows only games with a lean, largest edge first. Hypothetical analysis, not betting
+  advice.
 - **Dashboard**: the day's games on the left; the selected game's matchup (records, arena, final
   score in replay), model vs Kalshi win probability, Kalshi's price over the hours before
   tip-off, team form before the game, and the official injury report in the middle; the day's
