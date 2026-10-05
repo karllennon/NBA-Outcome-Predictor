@@ -6,6 +6,7 @@ computed the same way as the training features.
 from datetime import date
 import joblib
 import pandas as pd
+from data_pipeline import INJURY_PARAMS
 from injuries import InjuryModel
 from matchups import FEATURES, injury_diff
 
@@ -22,12 +23,40 @@ class GamePredictor:
         players = pd.read_csv(f'{data_dir}/raw_player_boxscores.csv', low_memory=False)
         players.columns = players.columns.str.strip()
         positions = pd.read_csv(f'{data_dir}/player_positions.csv')
-        self.injuries = InjuryModel(players, team_games, positions)
+        # Same settings as the training pipeline, so the injury feature means the same thing
+        params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
+        self.injuries = InjuryModel(players, team_games, positions, **params)
+        self.report, self.report_error = None, None
         try:
             trades = pd.read_csv(f'{data_dir}/recent_trades.csv')
             self.trades = dict(zip(trades['PLAYER_NAME'], trades['NEW_TEAM']))
         except (FileNotFoundError, KeyError):
             self.trades = {}
+
+    def load_injury_report(self, fetch=True):
+        """Latest official injury report (downloaded and archived, or the newest archived one)."""
+        from injury_reports import fetch_latest, load_archive
+        report = None
+        if fetch:
+            try:
+                report = fetch_latest()
+            except Exception as e:  # network down, format changed: fall back to manual input
+                self.report_error = f"{type(e).__name__}: {e}"
+        if report is None:
+            archive = load_archive()
+            if len(archive):
+                report = archive[archive['REPORT_TIME'] == archive['REPORT_TIME'].max()]
+        if report is not None and len(report):
+            self.report = report
+            self.injuries.set_reports(report)
+        return self.report
+
+    def report_out(self, team_name, game_date=None):
+        """Players the latest pre-tip-off report lists as out for this team's game today
+        (box-score names, top-10 rotation or not). None when no report covers the game."""
+        game_date = pd.Timestamp(game_date or date.today())
+        listed = self.injuries.report_out(team_name, game_date)
+        return None if listed is None else sorted(listed)
 
     def teams(self):
         return sorted(self.state['TEAM_NAME'])
@@ -63,12 +92,27 @@ class GamePredictor:
         loss, details = self.injuries.net_loss(rotation, out)
         return loss, details, skipped
 
-    def predict(self, home_team, away_team, home_out=(), away_out=(),
+    def predict(self, home_team, away_team, home_out=None, away_out=None,
                 home_acute=(), away_acute=(), game_date=None):
+        """home_out / away_out: players out. None = take them from the injury report
+        (load_injury_report() first); a list is a manual override."""
         game_date = pd.Timestamp(game_date or date.today())
+        sources = {}
+        if home_out is None:
+            home_out = self.report_out(home_team, game_date)
+            sources['home'] = 'report' if home_out is not None else 'none'
+        if away_out is None:
+            away_out = self.report_out(away_team, game_date)
+            sources['away'] = 'report' if away_out is not None else 'none'
+        home_out, away_out = home_out or [], away_out or []
         home, away = self._team_row(home_team, game_date), self._team_row(away_team, game_date)
 
         home_rot, away_rot = self.rotation(home_team, game_date), self.rotation(away_team, game_date)
+        # Report lists include two-way and deep-bench players; only rotation players count
+        if sources.get('home') == 'report':
+            home_out = [p for p in home_out if p in set(home_rot['PLAYER_NAME'])]
+        if sources.get('away') == 'report':
+            away_out = [p for p in away_out if p in set(away_rot['PLAYER_NAME'])]
         h_loss, h_details, h_skipped = self._injury_loss(home_team, home_rot, home_out, home_acute)
         a_loss, a_details, a_skipped = self._injury_loss(away_team, away_rot, away_out, away_acute)
 
@@ -95,6 +139,7 @@ class GamePredictor:
             'home_rotation': home_rot, 'away_rotation': away_rot,
             'home_details': h_details, 'away_details': a_details,
             'skipped': h_skipped + a_skipped,
+            'home_out': list(home_out), 'away_out': list(away_out), 'out_sources': sources,
             'stale_warning': (f"Latest data is {stale_days} days old; rolling stats may not reflect "
                               f"current rosters. Re-run ingest.py and data_pipeline.py.")
                              if stale_days > 14 else None,

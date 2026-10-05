@@ -16,3 +16,5 @@ urllib3==2.6.3
 xgboost==3.2.0
 matplotlib
 streamlit
+pdfplumber
+pytest

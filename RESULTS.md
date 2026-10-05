@@ -57,3 +57,43 @@ All later experiments compare against this until the data changes again:
 
 The held-out window moved later, so these numbers are not comparable with Phase 0.
 Late-season games are easier to predict (last fold AUC ~0.82), which lifts all models.
+
+## Evaluation note: deterministic game order
+
+The experiment harness (`src/evaluation.py`, shared by `train.py` and `experiments.py`) sorts
+games by date and then GAME_ID, so fold boundaries are identical for every variant. Same-day ties
+were previously in arbitrary order, which moved the Phase 1 numbers slightly. Reference
+after this change: Elo only 0.7369 AUC / 0.5984 log loss; all features 0.7427 / 0.5922.
+Each experiment also reports the paired per-game log-loss change with its standard error and
+how many of the 4 folds improved, so small differences can be judged against noise.
+
+## Phase 2: Official NBA injury reports
+
+`src/injury_reports.py` downloads the league's official injury report PDFs and parses them with
+pdfplumber. URL pattern verified against the server (not guessed):
+`https://ak-static.cms.nba.com/referee/injury/Injury-Report_<date>_<time>.pdf`, hourly `HHAM/PM`
+files before 2025-12-22 (the 05PM file holds the 5:30 PM report) and 15-minute `HH_MMAM/PM` files
+since. Names are matched to box scores after removing accents, punctuation and suffixes
+(Dončić, Butler III, P.J. Washington), with a unique last-name + first-initial fallback.
+On two sample reports, 151 of 158 non-G-League players matched. The 7 misses had never played
+for that team (season-long absences or pending trades), so they could not be in its rotation.
+
+Backfill: for every game day, the last report published at least 30 minutes before each tip-off
+time. 2,272 reports archived in `data/injury_reports/` (13 MB, gzipped CSV); one game day
+(2024-12-09) had no report. 97.6% of team-games have a pre-tip-off report; the rest fall back to
+the old guess.
+
+| Injury source (1,762 held-out games) | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7369 | 67.93% | 0.5984 | 0.2058 |
+| Before: guess (missed previous game) | 0.7427 | 68.27% | 0.5922 | 0.2036 |
+| **Reports: Out (kept)** | **0.7483** | **69.24%** | **0.5872** | **0.2014** |
+| Reports: Out + Doubtful | 0.7482 | 69.24% | 0.5873 | 0.2015 |
+
+Reports vs guess: log loss -0.0050 (SE 0.0023), better in 3 of 4 folds. Kept, with Out only;
+counting Doubtful players as out adds nothing. Live predictions (CLI, daily slate, dashboard)
+pre-fill players listed Out from the latest report, through the same `InjuryModel.report_out`
+used in training; the dashboard checkboxes still override.
+
+The old `src/injury_scraper.py` scraped RotoWire, whose terms do not allow it, and was not used
+anywhere; it was removed.

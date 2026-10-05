@@ -29,9 +29,11 @@ TEAM_NAME_MAP = {
     'Los Angeles Clippers': 'LA Clippers'
 }
 
-@st.cache_resource
+@st.cache_resource(ttl=900)
 def load_predictor():
-    return GamePredictor()
+    predictor = GamePredictor()
+    predictor.load_injury_report()  # re-downloaded at most every 15 minutes
+    return predictor
 
 @st.cache_data
 def load_test_predictions():
@@ -46,6 +48,9 @@ def get_all_teams():
 
 def get_rotation(team_name):
     return load_predictor().rotation(team_name).to_dict('records')
+
+def get_report_out(team_name):
+    return set(load_predictor().report_out(team_name) or [])
 
 def get_todays_games():
     try:
@@ -137,6 +142,15 @@ if page == "🏀 Today's Slate":
 
     home_rotation = get_rotation(home_team)
     away_rotation = get_rotation(away_team)
+    home_report_out, away_report_out = get_report_out(home_team), get_report_out(away_team)
+
+    predictor = load_predictor()
+    if predictor.report is not None:
+        st.caption(f"Official injury report: {pd.Timestamp(predictor.report['REPORT_TIME'].max()):%b %d, %I:%M %p} ET. "
+                   "Players listed Out are pre-checked; uncheck or check boxes to override.")
+    else:
+        msg = f" ({predictor.report_error})" if predictor.report_error else ""
+        st.caption(f"No official injury report available{msg}. Check injured players manually.")
 
     col1, col2 = st.columns(2)
     home_injuries = []
@@ -150,8 +164,11 @@ if page == "🏀 Today's Slate":
         if home_rotation:
             for i, player in enumerate(home_rotation):
                 core_tag = "⭐ " if i < 4 else ""
+                listed = player['PLAYER_NAME'] in home_report_out
                 is_out = st.checkbox(
-                    f"{core_tag}{player['PLAYER_NAME']} ({player['impact_score']:.1f})",
+                    f"{core_tag}{player['PLAYER_NAME']} ({player['impact_score']:.1f})"
+                    + (" 📋 report: OUT" if listed else ""),
+                    value=listed,
                     key=f"home_out_{home_team}_{i}"
                 )
                 if is_out:
@@ -171,8 +188,11 @@ if page == "🏀 Today's Slate":
         if away_rotation:
             for i, player in enumerate(away_rotation):
                 core_tag = "⭐ " if i < 4 else ""
+                listed = player['PLAYER_NAME'] in away_report_out
                 is_out = st.checkbox(
-                    f"{core_tag}{player['PLAYER_NAME']} ({player['impact_score']:.1f})",
+                    f"{core_tag}{player['PLAYER_NAME']} ({player['impact_score']:.1f})"
+                    + (" 📋 report: OUT" if listed else ""),
+                    value=listed,
                     key=f"away_out_{away_team}_{i}"
                 )
                 if is_out:
