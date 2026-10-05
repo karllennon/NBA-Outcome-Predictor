@@ -144,3 +144,40 @@ the current model re-run over games up to that date. Each player's rating "going
 game" appears to use only earlier games, but the model's design and tuning were fit with data
 that includes later seasons. Any gain measured with these values may therefore be slightly
 optimistic.
+
+## Phase 4: Market odds (Kalshi)
+
+`src/market_odds.py` reads Kalshi's public market-data API (no login, no trading or order code).
+Verified against Kalshi's docs and live API in October 2026: base URL
+`https://external-api.kalshi.com/trade-api/v2`, series `KXNBAGAME`, event tickers
+`KXNBAGAME-<YYMONDD><AWAY><HOME>` (checked on known games, e.g. `26MAR03DALCHA` = Dallas at
+Charlotte), one market per team using standard NBA abbreviations. Market probability = midpoint
+of the home team's YES bid and ask (blank for an empty book or a spread over 25 cents).
+
+- **Live:** `python src/market_odds.py` appends one row per game to
+  `data/market_snapshots.csv` (timestamp, game, teams, probability, bids/asks, volume), never
+  rewriting earlier rows. Tip-off time and status come from the NBA scoreboard, and a `PREGAME`
+  column marks prices taken before tip-off. The local refresh scripts take a snapshot each run.
+- **History:** Kalshi's NBA game markets start 2025-04-15. `--history` takes the bid/ask
+  midpoint from the last hourly candlestick ending at scheduled tip-off (tip times from the
+  injury reports) for every regular-season game since then: 1,223 of 1,225 games priced
+  (`data/market_history.csv`). Settled markets older than Kalshi's archive cutoff come from its
+  `/historical/` endpoints.
+
+**Model vs market** on the 1,223 held-out 2025-26 games that have a pre-tip-off price (shipped
+model = Phase 3 model, walk-forward predictions):
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7338 | 68.03% | 0.5998 | 0.2066 |
+| Shipped model | 0.7479 | 68.93% | 0.5860 | 0.2012 |
+| **Kalshi pre-tip-off midpoint** | **0.7651** | **69.42%** | **0.5697** | **0.1945** |
+
+The market is clearly better: the model's log loss is 0.0163 higher (SE 0.0056). A 50/50
+average of model and market scores 0.5731, worse than the market alone, so on this evidence
+the model adds no information beyond the closing market price. The market price at tip-off
+also reflects late scratches and lineup news the model only partly sees.
+
+**The Odds API (optional item):** skipped. No `ODDS_API_KEY` is set in the environment or a
+`.env` file. Kalshi's free history covered the model-vs-market comparison for 2025-26; a key
+would add 2023-24 and 2024-25 sportsbook lines.

@@ -109,6 +109,36 @@ def _with(**kw):
     return params
 
 
+# ------------------------------------------------------------------ Phase 4
+
+@experiment
+def market_comparison(preds_path='data/test_predictions.csv', market_path='data/market_history.csv'):
+    """Shipped model's walk-forward held-out predictions vs Kalshi's pre-tip-off price, on the
+    held-out games that have a market price (run train.py and market_odds.py --history first)."""
+    preds = pd.read_csv(preds_path, dtype={'GAME_ID': str}, parse_dates=['GAME_DATE'])
+    preds['GAME_ID'] = preds['GAME_ID'].str.zfill(10)
+    market = pd.read_csv(market_path, dtype={'GAME_ID': str})
+    df = preds.merge(market[['GAME_ID', 'MARKET_HOME_PROB']], on='GAME_ID')
+    print(f"Held-out games: {len(preds)}; with a Kalshi game market: {len(df)}; "
+          f"with a pre-tip-off price: {df['MARKET_HOME_PROB'].notna().sum()}")
+    df = df.dropna(subset=['MARKET_HOME_PROB']).rename(columns={
+        'ELO_PROB': 'Elo only (logistic)', 'MODEL_PROB': 'Shipped model',
+        'MARKET_HOME_PROB': 'Kalshi pre-tip-off midpoint'})
+    df['FOLD'] = 0
+    names = ['Elo only (logistic)', 'Shipped model', 'Kalshi pre-tip-off midpoint']
+    results = score(df, names)
+    print_table(results, f"Model vs market ({len(df)} games, "
+                         f"{df['GAME_DATE'].min().date()} to {df['GAME_DATE'].max().date()})")
+    mean, se, _, _ = paired_delta(df, 'Kalshi pre-tip-off midpoint', 'Shipped model')
+    print(f"  Shipped model vs market: log loss {mean:+.4f} (SE {se:.4f})")
+    blend = 0.5 * df['Shipped model'] + 0.5 * df['Kalshi pre-tip-off midpoint']
+    print(f"  (for reference, 50/50 average of model and market: log loss "
+          f"{score(df.assign(B=blend), ['B'])['log_loss'].iloc[0]:.4f})")
+    print()
+    print(markdown_table(results))
+    return results, df
+
+
 # replacement_boosts and minutes_weighting were tested here and their switches removed after
 # the results (RESULTS.md, Phase 3): boosts hurt, minutes weighting did not help.
 

@@ -13,6 +13,9 @@ echo === Refresh started %DATE% %TIME% ===
 "%PY%" -u src\ingest.py || goto :fail
 "%PY%" -u src\data_pipeline.py || goto :fail
 "%PY%" -u src\train.py || goto :fail
+REM Archive the latest injury report and today's Kalshi prices (non-fatal: offseason or outage)
+"%PY%" -u src\injury_reports.py || echo [!] injury report fetch failed
+"%PY%" -u src\market_odds.py || echo [!] Kalshi snapshot failed
 echo === Refresh finished %DATE% %TIME% ===
 exit /b 0
 
