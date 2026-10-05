@@ -465,3 +465,7 @@ if __name__ == "__main__":
             print(snap[['AWAY_TEAM', 'HOME_TEAM', 'COMPETITION', 'MARKET_HOME_PROB',
                         'HOME_YES_BID', 'HOME_YES_ASK']].to_string(index=False))
             print(f"Appended {len(snap)} rows to {SNAPSHOT_PATH}")
+        ladders = spread_snapshot(args.date)
+        if not ladders.empty:
+            print(f"Appended {len(ladders)} spread-ladder rows ({ladders['EVENT_TICKER'].nunique()} games) "
+                  f"to {SPREAD_SNAPSHOT_PATH}")

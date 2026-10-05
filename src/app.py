@@ -956,7 +956,7 @@ def page_model():
 
 sidebar()
 pages = [
-    st.Page(page_dashboard, title='Dashboard', icon=':material/sports_basketball:', url_path='dashboard', default=True),
+    st.Page(page_dashboard, title='Dashboard', icon=':material/sports_basketball:', default=True),
     st.Page(page_markets, title='Markets', icon=':material/show_chart:', url_path='markets'),
     st.Page(page_predictor, title='Predictor', icon=':material/tune:', url_path='predictor'),
     st.Page(page_track_record, title='Track Record', icon=':material/fact_check:', url_path='track-record'),

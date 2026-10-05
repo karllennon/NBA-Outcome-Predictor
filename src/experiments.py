@@ -456,12 +456,14 @@ def paper_trades(report_path='data/market_report.md'):
                          f"(SE {leans['pnl'].std(ddof=1) / np.sqrt(len(leans)):.3f})")
             cal = leans.assign(b=pd.cut(leans['p_side'], [0, .4, .5, .6, .7, 1])).groupby('b', observed=True).agg(
                 n=('won', 'size'), model_p=('p_side', 'mean'), actual=('won', 'mean'), price=('mid', 'mean'))
-            lines.append('- calibration of the model on leans:\n\n' + cal.to_markdown(floatfmt='.3f'))
+            lines.append('- calibration of the model on leans:\n\n```\n'
+                         + cal.to_string(float_format=lambda v: f"{v:.3f}") + '\n```')
         # all priced sides, edge buckets: is a bigger edge followed by better results?
         g = g.assign(eb=pd.cut(g['edge_pts'], [-100, -5, 0, 5, 10, 100]))
         eb = g.groupby('eb', observed=True).agg(n=('won', 'size'), win=('won', 'mean'), price=('mid', 'mean'),
                                                 pnl=('pnl', 'mean'))
-        lines.append('\n- every priced game by edge bucket (best side):\n\n' + eb.to_markdown(floatfmt='.3f'))
+        lines.append('\n- every priced game by edge bucket (best side):\n\n```\n'
+                     + eb.to_string(float_format=lambda v: f"{v:.3f}") + '\n```')
         lines.append('')
     text = '\n'.join(lines)
     with open(report_path, 'w', encoding='utf-8') as f:
