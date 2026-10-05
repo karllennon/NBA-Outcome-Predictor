@@ -53,6 +53,7 @@ def test_tip_time_parsing():
     assert ir.parse_tip_time('2026-03-03', '07:30(ET)') == pd.Timestamp('2026-03-03 19:30')
     assert ir.parse_tip_time('2026-03-03', '12:00(ET)') == pd.Timestamp('2026-03-03 12:00')
     assert ir.parse_tip_time('2026-03-03', '01:00(ET)') == pd.Timestamp('2026-03-03 13:00')
+    assert ir.parse_tip_time('2026-03-03', '11:00(ET)') == pd.Timestamp('2026-03-03 23:00')  # PHX@SAC
 
 
 def test_parse_fixture_report():

@@ -14,17 +14,17 @@ also tuned inside each block on those training games. That gives 1,762 held-out 
 | Model | ROC-AUC | Accuracy | Log loss | Brier |
 |---|---|---|---|---|
 | Elo only (baseline) | 0.742 | 68.6% | 0.595 | 0.204 |
-| **All features, logistic regression (shipped)** | **0.757** | **70.5%** | **0.581** | **0.199** |
-| XGBoost, depth 2 (regularized) | 0.753 | 69.4% | 0.588 | 0.201 |
-| XGBoost, depth 5 (original) | 0.728 | 67.3% | 0.615 | 0.211 |
+| **All features, logistic regression (shipped)** | **0.757** | **70.6%** | **0.581** | **0.199** |
+| XGBoost, depth 2 (regularized) | 0.753 | 69.6% | 0.588 | 0.201 |
+| XGBoost, depth 5 (original) | 0.727 | 66.8% | 0.614 | 0.211 |
 
 **Against the market.** On the 1,223 of those games that had a Kalshi game market (2025-26
 season), the market's price at tip-off was more accurate than the model:
 
 | | ROC-AUC | Accuracy | Log loss | Brier |
 |---|---|---|---|---|
-| Shipped model | 0.753 | 70.0% | 0.582 | 0.200 |
-| Kalshi pre-tip-off price | 0.765 | 69.4% | 0.570 | 0.195 |
+| Shipped model | 0.753 | 70.2% | 0.582 | 0.199 |
+| Kalshi pre-tip-off price | 0.765 | 69.5% | 0.569 | 0.194 |
 
 A 50/50 average of model and market is also worse than the market alone, so treat the model as
 a well-calibrated baseline, not a source of betting edge.
@@ -141,7 +141,7 @@ the fetch fails, or when no new games arrive between November and March.
 - **Model Performance**: walk-forward table, market comparison, ROC curve, feature weights.
 
 ## Known Limitations
-- The market's tip-off price beats the model (log loss 0.570 vs 0.582 on 1,223 games).
+- The market's tip-off price beats the model (log loss 0.569 vs 0.582 on 1,223 games).
 - Box-score impact scores undervalue defensive specialists. No all-in-one plus-minus metric is
   used: EPM and LEBRON are paid, RAPM's data API is closed to automated use, and DARKO was not
   tested (see RESULTS.md).

@@ -295,9 +295,20 @@ schedule density adds nothing beyond rest days and back-to-backs; the opponent-a
 rating adds nothing beyond Elo and rolling plus/minus.
 
 Final shipped model (Phases 0-6), walk-forward on 1,762 held-out games:
-**ROC-AUC 0.7568, accuracy 70.49%, log loss 0.5810, Brier 0.1986** (Elo only: 0.7421 / 0.5947).
-On the 1,223 of those games with a Kalshi price: model log loss 0.5824 vs market 0.5697
-(50/50 blend 0.5719, still worse than the market alone).
+**ROC-AUC 0.7570, accuracy 70.60%, log loss 0.5808, Brier 0.1986** (Elo only: 0.7421 / 0.5947).
+On the 1,223 of those games with a Kalshi price: model log loss 0.5821 vs market 0.5694
+(50/50 blend 0.5716, still worse than the market alone). These final figures include the
+tip-time correction below.
+
+### Correction: 11:00 tip times
+
+Injury reports print tip times without AM/PM. The parser treated "11:00" as 11 AM, but every
+such game is an 11 PM Eastern tip (late West Coast games, e.g. PHX@SAC on 2026-03-03). For
+those 15 games the "last report before tip-off" cutoff was 10:30 AM (so they fell back to the
+missed-previous-game guess) and their Kalshi price was taken at 11 AM instead of tip-off. Both
+are fixed; the market price is still pre-game either way, so there was no leakage. Effect on the
+shipped model: log loss 0.5810 -> 0.5808, AUC 0.7568 -> 0.7570; earlier tables in this file
+are left as measured at the time.
 
 ## Phase 7: Dashboard
 

@@ -361,6 +361,17 @@ def load_latest_archived():
     return pd.read_csv(os.path.join(ARCHIVE_DIR, files[-1]), parse_dates=['REPORT_TIME', 'GAME_DATE'])
 
 
+def load_archive_day(game_date):
+    """Archived reports published on one date (cheap: reads only that day's files)."""
+    prefix = pd.Timestamp(game_date).strftime('%Y-%m-%d')
+    if not os.path.isdir(ARCHIVE_DIR):
+        return pd.DataFrame(columns=COLUMNS)
+    frames = [pd.read_csv(os.path.join(ARCHIVE_DIR, f), parse_dates=['REPORT_TIME', 'GAME_DATE'])
+              for f in sorted(os.listdir(ARCHIVE_DIR)) if f.startswith(prefix) and f.endswith('.csv.gz')]
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=COLUMNS)
+
+
 def load_archive():
     """All archived reports as one DataFrame."""
     if not os.path.isdir(ARCHIVE_DIR):
@@ -379,8 +390,9 @@ def parse_tip_time(game_date, game_time):
     if not m:
         return None
     hour, minute = int(m.group(1)), int(m.group(2))
-    # Times are printed on a 12-hour clock without AM/PM; NBA games tip between 11am and 11pm
-    if hour < 11:
+    # Times are printed on a 12-hour clock without AM/PM. Every listed tip is from noon to
+    # 11 PM Eastern (an 11:00 tip is a late West Coast game), so only 12:xx stays as is.
+    if hour < 12:
         hour += 12
     return pd.Timestamp(game_date) + timedelta(hours=hour, minutes=minute)
 
