@@ -20,3 +20,11 @@ __pycache__/
 .vscode/
 # DARKO leaderboard downloads (their data; download yourself, see RESULTS.md Phase 3.3)
 data/darko/
+
+# Kalshi data: local only. Kalshi's Developer Agreement limits API data to a member's own
+# trading and forbids sharing it, so it is never committed.
+data/market_history.csv
+data/market_snapshots.csv
+data/market_spread_history.csv
+data/market_spread_snapshots.csv
+data/prediction_log.csv

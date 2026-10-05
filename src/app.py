@@ -320,7 +320,7 @@ def markets_card(games_today, selected_id, mode):
     body = f'<table class="cv-table">{head}{"".join(rows)}</table>' \
            f'<div class="cv-small" style="margin-top:8px">Home-team win probability. Kalshi = midpoint of the ' \
            f'YES bid/ask on its NBA game market (the prices behind PrizePicks game picks). Gaps under 5 points ' \
-           f'are within fees and noise; on 1,223 past games the market was more accurate than the model.</div>'
+           f'are within fees and noise; on past games the market was more accurate than the model.</div>'
     ui.html_block(ui.card('Game markets · Kalshi', body, sub=f'{len(games_today)} games'))
 
 

@@ -179,23 +179,22 @@ of the home team's YES bid and ask (blank for an empty book or a spread over 25 
   column marks prices taken before tip-off. The local refresh scripts take a snapshot each run.
 - **History:** Kalshi's NBA game markets start 2025-04-15. `--history` takes the bid/ask
   midpoint from the last hourly candlestick ending at scheduled tip-off (tip times from the
-  injury reports) for every regular-season game since then: 1,223 of 1,225 games priced
-  (`data/market_history.csv`). Settled markets older than Kalshi's archive cutoff come from its
-  `/historical/` endpoints.
+  injury reports) for nearly every regular-season game since then (`data/market_history.csv`).
+  Settled markets older than Kalshi's archive cutoff come from its `/historical/` endpoints.
 
-**Model vs market** on the 1,223 held-out 2025-26 games that have a pre-tip-off price (shipped
-model = Phase 3 model, walk-forward predictions):
+**Data terms (added later).** Kalshi's API Developer Agreement (v1.1) limits API use to
+facilitating a member's own trading and prohibits collecting or storing API data except for
+that purpose and sharing it with third parties. Kalshi data is therefore kept local only: the
+market files are git-ignored, were removed from this repository's history, and the exact
+model-vs-market figures are not published here. They are reproduced locally by
+`python src/train.py` (written to the git-ignored `data/market_metrics.csv` and shown on the
+dashboard's Model page) and `python src/experiments.py market_comparison`.
 
-| Model | ROC-AUC | Accuracy | Log loss | Brier |
-|---|---|---|---|---|
-| Elo only (logistic) | 0.7338 | 68.03% | 0.5998 | 0.2066 |
-| Shipped model | 0.7479 | 68.93% | 0.5860 | 0.2012 |
-| **Kalshi pre-tip-off midpoint** | **0.7651** | **69.42%** | **0.5697** | **0.1945** |
-
-The market is clearly better: the model's log loss is 0.0163 higher (SE 0.0056). A 50/50
-average of model and market scores 0.5731, worse than the market alone, so on this evidence
-the model adds no information beyond the closing market price. The market price at tip-off
-also reflects late scratches and lineup news the model only partly sees.
+**Model vs market (summary).** On the held-out 2025-26 games with a pre-tip-off price, the
+market was clearly more accurate than the model (the log-loss gap is about three standard
+errors), and a 50/50 average of model and market did not beat the market alone. On this
+evidence the model adds no information beyond the tip-off market price, which also reflects
+late scratches and lineup news the model only partly sees.
 
 **The Odds API (optional item):** skipped. No `ODDS_API_KEY` is set in the environment or a
 `.env` file. Kalshi's free history covered the model-vs-market comparison for 2025-26; a key
@@ -315,9 +314,8 @@ rating adds nothing beyond Elo and rolling plus/minus.
 
 Final shipped model (Phases 0-6), walk-forward on 1,762 held-out games:
 **ROC-AUC 0.7579, accuracy 70.43%, log loss 0.5795, Brier 0.1982** (Elo only: 0.7421 / 0.5947).
-On the 1,223 of those games with a Kalshi price: model log loss 0.5809 vs market 0.5694
-(50/50 blend 0.5713, still worse than the market alone). These final figures include both
-corrections below.
+The Kalshi market price remains more accurate on the games where it exists (figures kept local,
+see Phase 4). These final figures include both corrections below.
 
 ### Correction: 11:00 tip times
 
