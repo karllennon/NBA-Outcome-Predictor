@@ -452,31 +452,86 @@ def backfill(game_dates, session=None, pause=1.0, minutes_before=30):
             continue
         streak = 0
         save(first, first['REPORT_TIME'].iloc[0])
-        tips = {parse_tip_time(day, t) for t in first['GAME_TIME'].dropna().unique()}
-        tips = sorted(t for t in tips if t is not None)
-        first_time = pd.Timestamp(first['REPORT_TIME'].iloc[0])
-        fetched = {first_time}
-        for tip in tips:
-            for slot in report_slots_before(tip - timedelta(minutes=minutes_before), max_hours=6):
-                if slot <= first_time or slot in fetched:
-                    break  # a report we already have is the latest one before this tip
-                df = fetch_report(slot, session)
-                time.sleep(pause)
-                if df is not None and not df.empty:
-                    save(df, slot)
-                    fetched.add(slot)
-                    break
+        have = {pd.Timestamp(first['REPORT_TIME'].iloc[0])}
+        fill_pre_tip(day, tip_times(first, day), have, session, pause, minutes_before)
         if i % 25 == 0:
-            print(f"  {day.date()}: {len(tips)} tip times, {len(fetched)} reports", flush=True)
+            print(f"  {day.date()}: {len(have)} reports", flush=True)
     return missing
+
+
+def tip_times(report, day):
+    """Distinct tip-off times of the games played on `day` (not later days) in a report."""
+    rows = report[pd.to_datetime(report['GAME_DATE']) == pd.Timestamp(day)]
+    tips = {parse_tip_time(day, t) for t in rows['GAME_TIME'].dropna().unique()}
+    return sorted(t for t in tips if t is not None)
+
+
+def fill_pre_tip(day, tips, have, session, pause=1.0, minutes_before=30, max_hours=8):
+    """
+    For each tip-off, make sure the archive holds the newest report published at least
+    `minutes_before` minutes earlier. `have` is the set of report times already archived for
+    the day and is updated in place. Stops searching a tip once it reaches a report it has.
+    """
+    for tip in tips:
+        cutoff = tip - timedelta(minutes=minutes_before)
+        for slot in report_slots_before(cutoff, max_hours=max_hours):
+            if any(slot <= h <= cutoff for h in have):
+                break  # the newest report before this tip is already archived
+            df = fetch_report(slot, session)
+            time.sleep(pause)
+            if df is not None and not df.empty:
+                save(df, slot)
+                have.add(pd.Timestamp(df['REPORT_TIME'].iloc[0]))
+                break
+
+
+def repair_pre_tip(game_dates, session=None, pause=1.0):
+    """
+    Re-check already archived days and fetch any missing "last report before tip-off", e.g. for
+    afternoon games (an earlier version of backfill skipped tips before the first report it read).
+    Stops after MAX_MISSING_STREAK days in a row where every fetch failed.
+    """
+    session = session or requests.Session()
+    added, streak = 0, 0
+    days = sorted(set(pd.to_datetime(pd.Series(game_dates)).dt.normalize()))
+    for i, day in enumerate(days):
+        reports = load_archive_day(day)
+        if reports.empty:
+            continue
+        have = set(pd.to_datetime(reports['REPORT_TIME']).unique())
+        before = len(have)
+        tips = tip_times(reports, day)
+        missing_tips = [t for t in tips
+                        if not any(h <= t - timedelta(minutes=30) for h in have)]
+        if not missing_tips:
+            continue
+        fill_pre_tip(day, missing_tips, have, session, pause)
+        new = len(have) - before
+        added += new
+        streak = 0 if new else streak + 1
+        if streak >= MAX_MISSING_STREAK:
+            print(f"  Stopping at {day.date()}: nothing fetched for {streak} days in a row "
+                  "(server refusing requests?). Re-run later to resume.", flush=True)
+            break
+        if i % 20 == 0:
+            print(f"  {day.date()}: {len(missing_tips)} early tips, +{new} reports (total +{added})", flush=True)
+    return added
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--backfill', action='store_true')
+    parser.add_argument('--repair', action='store_true',
+                        help='fetch missing pre-tip-off reports for days already archived')
     parser.add_argument('--since', default=None, help='backfill start date, e.g. 2023-10-24')
     args = parser.parse_args()
-    if args.backfill:
+    if args.repair:
+        games = pd.read_csv('data/raw_nba_data.csv', parse_dates=['GAME_DATE'])
+        dates = games['GAME_DATE']
+        if args.since:
+            dates = dates[dates >= pd.Timestamp(args.since)]
+        print(f"Added {repair_pre_tip(dates)} reports")
+    elif args.backfill:
         games = pd.read_csv('data/raw_nba_data.csv', parse_dates=['GAME_DATE'])
         dates = games['GAME_DATE']
         if args.since:

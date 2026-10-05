@@ -295,10 +295,10 @@ schedule density adds nothing beyond rest days and back-to-backs; the opponent-a
 rating adds nothing beyond Elo and rolling plus/minus.
 
 Final shipped model (Phases 0-6), walk-forward on 1,762 held-out games:
-**ROC-AUC 0.7570, accuracy 70.60%, log loss 0.5808, Brier 0.1986** (Elo only: 0.7421 / 0.5947).
-On the 1,223 of those games with a Kalshi price: model log loss 0.5821 vs market 0.5694
-(50/50 blend 0.5716, still worse than the market alone). These final figures include the
-tip-time correction below.
+**ROC-AUC 0.7579, accuracy 70.43%, log loss 0.5795, Brier 0.1982** (Elo only: 0.7421 / 0.5947).
+On the 1,223 of those games with a Kalshi price: model log loss 0.5809 vs market 0.5694
+(50/50 blend 0.5713, still worse than the market alone). These final figures include both
+corrections below.
 
 ### Correction: 11:00 tip times
 
@@ -325,3 +325,15 @@ No model change; these features can only be measured once games are played.
   market. It is empty until the 2026-27 regular season starts (2026-10-20).
 - Sidebar and Model Performance page read the latest walk-forward metrics and the
   model-vs-market comparison written by `train.py`.
+
+### Correction: missing pre-tip-off reports for early games
+
+The Phase 2 backfill first read the report published around 5:45 PM, then looked for the latest
+report before each tip-off, but stopped immediately for tips earlier than that first report
+(afternoon and 6 PM games). Those team-games fell back to the "missed the previous game" guess
+when no earlier report was archived. `fill_pre_tip` now searches back from each tip's cutoff
+and stops only at a report it already has, and `python src/injury_reports.py --repair` filled
+the gaps (282 reports added; 18 tips still have no report 30+ minutes before tip-off). Coverage
+of team-games by a pre-tip-off report went from 97.6% to 99.3%. No leakage was involved (the
+fallback only uses earlier games). Effect on the shipped model: log loss 0.5808 -> 0.5795,
+AUC 0.7570 -> 0.7579.

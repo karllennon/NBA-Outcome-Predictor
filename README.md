@@ -14,27 +14,27 @@ also tuned inside each block on those training games. That gives 1,762 held-out 
 | Model | ROC-AUC | Accuracy | Log loss | Brier |
 |---|---|---|---|---|
 | Elo only (baseline) | 0.742 | 68.6% | 0.595 | 0.204 |
-| **All features, logistic regression (shipped)** | **0.757** | **70.6%** | **0.581** | **0.199** |
-| XGBoost, depth 2 (regularized) | 0.753 | 69.6% | 0.588 | 0.201 |
-| XGBoost, depth 5 (original) | 0.727 | 66.8% | 0.614 | 0.211 |
+| **All features, logistic regression (shipped)** | **0.758** | **70.4%** | **0.580** | **0.198** |
+| XGBoost, depth 2 (regularized) | 0.751 | 69.3% | 0.589 | 0.201 |
+| XGBoost, depth 5 (original) | 0.729 | 66.9% | 0.613 | 0.211 |
 
 **Against the market.** On the 1,223 of those games that had a Kalshi game market (2025-26
 season), the market's price at tip-off was more accurate than the model:
 
 | | ROC-AUC | Accuracy | Log loss | Brier |
 |---|---|---|---|---|
-| Shipped model | 0.753 | 70.2% | 0.582 | 0.199 |
+| Shipped model | 0.755 | 70.2% | 0.581 | 0.199 |
 | Kalshi pre-tip-off price | 0.765 | 69.5% | 0.569 | 0.194 |
 
 A 50/50 average of model and market is also worse than the market alone, so treat the model as
 a well-calibrated baseline, not a source of betting edge.
 
-**Calibration** (held-out): games predicted under 30% were won 19% of the time, and over 70%
-were won 78% (predicted 21% and 81%). In the middle the model is less sharp: games predicted at
-40-50% were won 39%, at 60-70% were won 74%.
+**Calibration** (held-out): games predicted under 30% were won 18% of the time, and over 70%
+were won 79% (predicted 21% and 81%). In the middle the model is less sharp: games predicted at
+40-50% were won 40%, at 60-70% were won 74%.
 
 The official injury reports are the largest gain over Elo: on held-out games, home teams win 39%
-in the bottom fifth of the injury differential and 72% in the top fifth (55% overall).
+in the bottom fifth of the injury differential and 73% in the top fifth (55% overall).
 
 Every experiment, including the ones that did not help, is in [RESULTS.md](RESULTS.md).
 
@@ -148,7 +148,7 @@ the fetch fails, or when no new games arrive between November and March.
 - **Model**: walk-forward results, market comparison, calibration, ROC curve, feature weights.
 
 ## Known Limitations
-- The market's tip-off price beats the model (log loss 0.569 vs 0.582 on 1,223 games).
+- The market's tip-off price beats the model (log loss 0.569 vs 0.581 on 1,223 games).
 - Box-score impact scores undervalue defensive specialists. No all-in-one plus-minus metric is
   used: EPM and LEBRON are paid, RAPM's data API is closed to automated use, and DARKO was not
   tested (see RESULTS.md).
