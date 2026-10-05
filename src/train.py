@@ -8,6 +8,7 @@ from sklearn.preprocessing import StandardScaler
 from data_pipeline import load_games
 from elo import ELO_GRID, elo_tables, tune_elo
 from evaluation import walk_forward, score, print_table
+import spread_model
 from matchups import FEATURES
 
 # Model saved for live predictions: 'logistic' or 'xgboost'.
@@ -116,6 +117,11 @@ def train_model():
     final_model = make().fit(df[cols], df['TARGET'])
     os.makedirs('models', exist_ok=True)
     joblib.dump(final_model, 'models/nba_model.joblib')
+
+    # 5. Spread model: a separate output (the win probability still comes from the classifier)
+    spread = spread_model.fit_target(spread_model.TARGETS['spread'], df)
+    spread_model.save(spread)
+    print(f"Spread model: Ridge on home margin, sigma {spread.sigma:.2f} pts -> {spread.config.model_path}")
 
     print(f"\nShipped model: {shipped}, refit on all {len(df)} games -> models/nba_model.joblib")
     weights = feature_weights(final_model)

@@ -182,34 +182,17 @@ def elo_tuning():
     return results
 
 
-def margin_model(alpha=1.0, sigma_holdout=0.2):
+def margin_model(sigma_holdout=0.2):
     """
-    Ridge regression on point margin, converted to P(home win) = Phi(margin / sigma).
-    sigma is fit by log loss on the last `sigma_holdout` of the training games, using a
-    regression fit on the earlier training games; the regression is then refit on all of them.
+    Phase 5.2: the spread model (spread_model.py: Ridge on the home margin, sigma from the end of
+    the training games) turned into P(home win) = P(margin > 0).
     """
-    import numpy as np
-    from scipy.optimize import minimize_scalar
-    from scipy.stats import norm
-    from sklearn.linear_model import Ridge
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
+    import spread_model
 
     def fit_predict(train, test):
-        make = lambda: make_pipeline(StandardScaler(), Ridge(alpha=alpha))
-        cut = int(len(train) * (1 - sigma_holdout))
-        early, late = train.iloc[:cut], train.iloc[cut:]
-        mu = make().fit(early[FEATURES], early['MARGIN']).predict(late[FEATURES])
-        y = late['TARGET'].values
-
-        def loss(sigma):
-            p = np.clip(norm.cdf(mu / sigma), 1e-6, 1 - 1e-6)
-            return -(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()
-
-        sigma = minimize_scalar(loss, bounds=(5, 30), method='bounded').x
-        fit_predict.sigmas.append(sigma)
-        reg = make().fit(train[FEATURES], train['MARGIN'])
-        return norm.cdf(reg.predict(test[FEATURES]) / sigma)
+        fitted = spread_model.fit_target(spread_model.TARGETS['spread'], train, sigma_holdout)
+        fit_predict.sigmas.append(fitted.sigma)
+        return fitted.prob_over(test, 0.0)
 
     fit_predict.sigmas = []
     return fit_predict
