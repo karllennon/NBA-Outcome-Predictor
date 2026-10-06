@@ -182,34 +182,17 @@ def elo_tuning():
     return results
 
 
-def margin_model(alpha=1.0, sigma_holdout=0.2):
+def margin_model(sigma_holdout=0.2):
     """
-    Ridge regression on point margin, converted to P(home win) = Phi(margin / sigma).
-    sigma is fit by log loss on the last `sigma_holdout` of the training games, using a
-    regression fit on the earlier training games; the regression is then refit on all of them.
+    Phase 5.2: the spread model (spread_model.py: Ridge on the home margin, sigma from the end of
+    the training games) turned into P(home win) = P(margin > 0).
     """
-    import numpy as np
-    from scipy.optimize import minimize_scalar
-    from scipy.stats import norm
-    from sklearn.linear_model import Ridge
-    from sklearn.pipeline import make_pipeline
-    from sklearn.preprocessing import StandardScaler
+    import spread_model
 
     def fit_predict(train, test):
-        make = lambda: make_pipeline(StandardScaler(), Ridge(alpha=alpha))
-        cut = int(len(train) * (1 - sigma_holdout))
-        early, late = train.iloc[:cut], train.iloc[cut:]
-        mu = make().fit(early[FEATURES], early['MARGIN']).predict(late[FEATURES])
-        y = late['TARGET'].values
-
-        def loss(sigma):
-            p = np.clip(norm.cdf(mu / sigma), 1e-6, 1 - 1e-6)
-            return -(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()
-
-        sigma = minimize_scalar(loss, bounds=(5, 30), method='bounded').x
-        fit_predict.sigmas.append(sigma)
-        reg = make().fit(train[FEATURES], train['MARGIN'])
-        return norm.cdf(reg.predict(test[FEATURES]) / sigma)
+        fitted = spread_model.fit_target(spread_model.TARGETS['spread'], train, sigma_holdout)
+        fit_predict.sigmas.append(fitted.sigma)
+        return fitted.prob_over(test, 0.0)
 
     fit_predict.sigmas = []
     return fit_predict
@@ -374,6 +357,40 @@ def darko_impact():
                     'DARKO replaces box impact': (df, replace),
                     'DARKO added as a second feature': (df, FEATURES + ['DARKO_INJURY_DIFF'])},
                    'Injury impact from DARKO DPM')
+
+
+# ------------------------------------------------------------------ Spread
+
+def _held_out_spreads():
+    """Walk-forward spread predictions written by train.py (margin, training-only sigma)."""
+    sp = pd.read_csv('data/test_spread_predictions.csv', parse_dates=['GAME_DATE'])
+    wp = pd.read_csv('data/test_predictions.csv')[['GAME_ID', 'MODEL_PROB']]
+    return sp.merge(wp, on='GAME_ID')
+
+
+@experiment
+def spread_calibration(offsets=(-12, -8, -4, 0, 4, 8, 12)):
+    """
+    Are cover probabilities calibrated? For each held-out game, lines at the predicted margin
+    plus each offset (.5 lines), P(margin > line) from the fold's training-only sigma, against
+    how often the margin actually cleared the line.
+    """
+    import numpy as np
+    from scipy.stats import norm
+    sp = _held_out_spreads()
+    rows = []
+    for d in offsets:
+        line = np.round(sp['MODEL_MARGIN']) + d + 0.5
+        p = 1 - norm.cdf((line - sp['MODEL_MARGIN']) / sp['SIGMA'])
+        rows.append(pd.DataFrame({'p': p, 'hit': (sp['MARGIN'] > line).astype(int)}))
+    r = pd.concat(rows, ignore_index=True)
+    r['bucket'] = pd.cut(r['p'], [0, .2, .3, .4, .45, .55, .6, .7, .8, 1.0], include_lowest=True)
+    table = r.groupby('bucket', observed=True).agg(n=('hit', 'size'), predicted=('p', 'mean'), actual=('hit', 'mean'))
+    print(f"Fold sigmas (training games only): {sorted(sp['SIGMA'].round(2).unique())}")
+    print(f"Held-out residual SD: {np.std(sp['MARGIN'] - sp['MODEL_MARGIN']):.2f} pts")
+    print(table.to_string(float_format=lambda v: f"{v:.3f}"))
+    # sharpness check at the one place it matters most: the model's own coin-flip line
+    return table
 
 
 # replacement_boosts and minutes_weighting were tested here and their switches removed after

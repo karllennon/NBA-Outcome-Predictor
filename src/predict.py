@@ -56,6 +56,16 @@ def predict_game(home_team_name, away_team_name, home_injuries=None, away_injuri
     pick = home_team_name if prob > 0.5 else away_team_name
     print("\n[PREDICTION]")
     print(f"  {home_team_name} win probability: {prob:.1%}")
+    margin = result.get('home_margin')
+    if margin is not None:
+        import spread_model
+        line = float(spread_model.round_half(spread_model.home_spread(margin)))
+        shown = 'PK' if line == 0 else f"{line:+g}"
+        away_fav = f" ({away_team_name} {-line:+g})" if line > 0 else ''
+        print(f"  Predicted spread: {home_team_name} {shown}{away_fav}   (negative = home favored)")
+        if (prob > 0.5) != (margin > 0):
+            print("  Note: the win probability and the spread pick different favorites, "
+                  "so this game is close to a toss-up.")
     print(f"  Pick: {pick}")
     print("=" * 50 + "\n")
     return result
