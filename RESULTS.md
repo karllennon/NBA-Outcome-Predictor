@@ -354,3 +354,74 @@ the gaps (282 reports added; 18 tips still have no report 30+ minutes before tip
 of team-games by a pre-tip-off report went from 97.6% to 99.3%. No leakage was involved (the
 fallback only uses earlier games). Effect on the shipped model: log loss 0.5808 -> 0.5795,
 AUC 0.7570 -> 0.7579.
+
+## Spread model
+
+A second output next to the win probability: the predicted home point margin from a Ridge
+regression on the same features (`src/spread_model.py`, the Phase 5.2 margin regression moved
+into a shared module). The win probability still comes from the logistic classifier. The spread
+is shown in betting convention: the home line is minus the predicted margin, so "home -4.5"
+means the home team is predicted to win by 4.5 (displayed to the nearest 0.5, favorite first,
+e.g. "BOS -3.5").
+
+### Accuracy (walk-forward, same 4 folds, Elo re-tuned per fold; 1,762 held-out games)
+
+| Predicted margin | MAE (pts) | RMSE (pts) | Bias (pts) | MAE by fold |
+|---|---|---|---|---|
+| Always the training-period average home margin | 13.08 | 16.40 | +0.08 | 12.4-14.7 |
+| Elo-only spread (margin regressed on ELO_DIFF) | 11.28 | 14.44 | +0.18 | 10.8-11.8 |
+| **Spread model (all features)** | **10.95** | **14.00** | **+0.19** | 10.6-11.6 |
+
+Spread model vs Elo-only: MAE -0.33 pts (SE 0.07), better in all 4 folds; vs the average:
+-2.13 pts (SE 0.16). For scale, the average absolute home margin in these games was 13.2 points,
+so a typical game still lands about 11 points from the prediction.
+
+### Spread vs win probability
+
+They pick different favorites in 59 of 1,762 games (3.3%). All are near toss-ups: in those
+games the win probability is at most 6.6 points from 50% (median 1.5) and the predicted margin
+at most 1.8 points (median 0.4). When they disagree, the win probability picked the winner in
+52.5% and the spread in 47.5% (59 games, no real difference). The dashboard marks these games as
+close to a toss-up.
+
+### Spread vs the Kalshi market line
+
+Kalshi has NBA spread markets (series `KXNBASPREAD`, checked against its docs and API in October
+2026): a ladder of "team wins by over N.5 points" markets per game. The market's line is where
+the favorite's ladder crosses 50 cents, interpolated from pre-tip-off prices
+(`python src/market_odds.py --spread-history`, about 2 hours, local and git-ignored). A usable
+line exists for about 86% of the held-out 2025-26 games. Live spread ladders are appended to a
+local snapshot file by the slate and by `python src/market_odds.py`.
+
+Result (exact figures kept local, Kalshi terms): the market line is slightly more accurate than
+the model's spread (a gap of about 0.2 points of mean absolute error, under two standard
+errors), and the model lands on the right side of the market line about half the time, no
+better than a coin flip. The model's spread still beats the Elo-only spread on the same games.
+Where the model and the line differ by 4+ points, the model's side did a little better than
+half, but that slice was chosen after seeing the results and is within noise.
+
+### Spread uncertainty (sigma) and calibration
+
+Each fold's sigma is the residual standard deviation on the last 20% of that fold's training
+games, predicted by a model fit on the earlier 80% (`spread_model.fit_target`); test games are
+never used. Fold sigmas: 13.7, 13.8, 14.1 and 14.5 points (held-out residual SD: 14.0). The
+shipped model's sigma, from the same procedure on all games, is 14.4.
+
+Calibration on held-out games (`python src/experiments.py spread_calibration`): for every game,
+lines at the predicted margin plus -12, -8, -4, 0, +4, +8 and +12 points (.5 lines), the predicted
+P(margin > line) against how often the margin actually cleared it:
+
+| Predicted chance | Cases | Predicted (avg) | Actual |
+|---|---|---|---|
+| 0-20% | 1,670 | 18.6% | 17.1% |
+| 20-30% | 1,854 | 26.9% | 24.6% |
+| 30-40% | 1,762 | 37.4% | 36.8% |
+| 45-55% | 1,762 | 48.6% | 48.9% |
+| **55-60%** | **971** | **59.2%** | **60.8%** |
+| 60-70% | 1,440 | 64.6% | 65.2% |
+| 70-80% | 2,496 | 75.4% | 76.5% |
+| 80-100% | 379 | 80.4% | 82.1% |
+
+Close to calibrated: predictions with about a 60% chance of covering covered about 61% of the
+time. Below 30% the model is a little too generous to the underdog side (predicted 26.9%,
+actual 24.6%). The rows share games, so they are not independent.

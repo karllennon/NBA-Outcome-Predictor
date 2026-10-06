@@ -20,8 +20,15 @@ CONTEXT_LOOKBACK_DAYS = 60    # travel features only look back to the previous g
 
 
 class GamePredictor:
-    def __init__(self, data_dir='data', model_path='models/nba_model.joblib'):
+    def __init__(self, data_dir='data', model_path='models/nba_model.joblib',
+                 spread_path='models/spread_model.joblib'):
         self.model = joblib.load(model_path)
+        # Spread: separate regression on the same feature row (None until train.py has run)
+        try:
+            import spread_model
+            self.spread = spread_model.load('spread', spread_path)
+        except FileNotFoundError:
+            self.spread = None
         self.state = pd.read_csv(f'{data_dir}/team_state.csv', parse_dates=['LAST_GAME_DATE'])
         # Same seasons as training (FIRST_SEASON_ID)
         team_games, players = load_raw(data_dir)
@@ -154,8 +161,11 @@ class GamePredictor:
         }])[FEATURES]
 
         stale_days = min(home['DAYS_SINCE_LAST_GAME'], away['DAYS_SINCE_LAST_GAME'])
+        home_margin = float(self.spread.predict(features)[0]) if self.spread is not None else None
         return {
             'home_prob': float(self.model.predict_proba(features)[0][1]),
+            'home_margin': home_margin,                       # predicted home minus away points
+            'spread_sigma': None if self.spread is None else self.spread.sigma,
             'features': features,
             'injury_diff': float(features['CORE_INJURY_DIFF'].iloc[0]),
             'home_rotation': home_rot, 'away_rotation': away_rot,
