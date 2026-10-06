@@ -141,6 +141,7 @@ div[class*="st-key-game-"] button p { font-size: 0.86rem; }
 .cv-tile .v { font-size: 1.6rem; font-weight: 800; color:#f2f5fb; margin-top: 4px; }
 .cv-tile .s { font-size: 0.78rem; color:#93a0b8; }
 @media (max-width: 900px) { .cv-tiles { grid-template-columns: repeat(2, 1fr); } }
+
 </style>
 """
 

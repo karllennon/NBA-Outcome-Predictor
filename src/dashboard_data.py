@@ -81,6 +81,8 @@ def day_view_replay(game_date):
     feats = pd.read_csv('data/final_training_set.csv').set_index('GAME_ID')
     market = pd.read_csv('data/market_history.csv', dtype={'GAME_ID': str}).set_index('GAME_ID')
     reports = load_archive_day(game_date)
+    spreads = _replay_spreads()
+    market_spreads = _replay_market_spreads()
 
     out = []
     for p in preds.itertuples():
@@ -99,6 +101,8 @@ def day_view_replay(game_date):
             'STATUS': 'final',
             'MODEL_HOME_PROB': float(p.MODEL_PROB), 'ELO_HOME_PROB': float(p.ELO_PROB),
             'MARKET_HOME_PROB': market_prob,
+            'MARKET_YES_BID': None if mk is None else mk['HOME_YES_BID'],
+            'MARKET_YES_ASK': None if mk is None else mk['HOME_YES_ASK'],
             'EVENT_TICKER': None if mk is None else mk['EVENT_TICKER'],
             'HOME_PTS': int(home['PTS']), 'AWAY_PTS': int(away['PTS']),
             'HOME_WIN': home['WL'] == 'W',
@@ -106,7 +110,45 @@ def day_view_replay(game_date):
             'AWAY_OUT': _report_out(reports, game_date, away['TEAM_NAME']),
             'FEATURES': feats.loc[p.GAME_ID, FEATURES].to_dict() if p.GAME_ID in feats.index else None,
         })
+        out[-1].update(_spread_view(out[-1], spreads.get(int(p.GAME_ID)), market_spreads.get(gid)))
     return sorted(out, key=lambda r: (r['TIP_TIME_ET'] is None, r['TIP_TIME_ET'] or 0, r['HOME_TEAM']))
+
+
+def _replay_spreads(path='data/test_spread_predictions.csv'):
+    """Walk-forward spread predictions: GAME_ID -> (predicted home margin, fold sigma)."""
+    try:
+        s = pd.read_csv(path)
+    except FileNotFoundError:
+        return {}
+    return {int(g): (m, sg) for g, m, sg in zip(s['GAME_ID'], s['MODEL_MARGIN'], s['SIGMA'])}
+
+
+def _replay_market_spreads(path='data/market_spread_history.csv'):
+    """Local Kalshi spread history: GAME_ID -> row dict (HOME_LINE, main-line market)."""
+    try:
+        s = pd.read_csv(path, dtype={'GAME_ID': str})
+    except FileNotFoundError:
+        return {}
+    s = s.dropna(subset=['HOME_LINE']) if 'HOME_LINE' in s else s.iloc[0:0]
+    return {r['GAME_ID']: r for r in s.to_dict('records')}
+
+
+def _spread_view(g, model_spread, market_spread):
+    """Spread fields shared by live and replay views."""
+    import spread_model
+    out = {'MODEL_HOME_MARGIN': None, 'SPREAD': None, 'SPREAD_TEXT': None, 'SPREAD_SIGMA': None,
+           'MARKET_SPREAD': None, 'MARKET_SPREAD_TEXT': None, 'MARKET_SPREAD_INFO': market_spread,
+           'TOSS_UP': False}
+    if model_spread is not None:
+        margin, sigma = model_spread
+        out.update({'MODEL_HOME_MARGIN': float(margin), 'SPREAD': float(-margin), 'SPREAD_SIGMA': float(sigma),
+                    'SPREAD_TEXT': spread_model.format_spread(margin, g['HOME_ABBR'], g['AWAY_ABBR']),
+                    'TOSS_UP': (g['MODEL_HOME_PROB'] > 0.5) != (margin > 0)})
+    if market_spread is not None and market_spread.get('HOME_LINE') == market_spread.get('HOME_LINE'):
+        line = float(market_spread['HOME_LINE'])
+        out.update({'MARKET_SPREAD': line,
+                    'MARKET_SPREAD_TEXT': spread_model.format_spread(-line, g['HOME_ABBR'], g['AWAY_ABBR'])})
+    return out
 
 
 def team_form_replay(game_id, team_id):

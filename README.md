@@ -1,7 +1,8 @@
 # NBA Outcome Predictor
 
-Predicts NBA game outcomes (home win probability) from Elo ratings, official injury reports,
-rolling team form, rest and travel, and compares each prediction with the Kalshi game market.
+Predicts NBA game outcomes (home win probability and point spread) from Elo ratings, official
+injury reports, rolling team form, rest and travel, and compares each prediction with the Kalshi
+game and spread markets.
 Includes a Streamlit dashboard and a log of every live prediction with its track record.
 
 ## Model Performance
@@ -34,6 +35,26 @@ The official injury reports are the largest gain over Elo: on held-out games, ho
 in the bottom fifth of the injury differential and 73% in the top fifth (55% overall).
 
 Every experiment, including the ones that did not help, is in [RESULTS.md](RESULTS.md).
+
+## Predicted Spread
+
+Alongside the win probability, the model predicts the **point spread**: how many points the home
+team should win or lose by (a Ridge regression on the same features, `src/spread_model.py`). It
+is a separate output; the win probability still comes from the logistic classifier.
+
+**Reading the sign** (betting convention): the line is written for a team, and a **negative**
+number means that team is favored by that many points. "BOS -4.5" means Boston is predicted to
+win by about 4.5; "LAL +4.5" is the same game from the Lakers' side. Lines are rounded to the
+nearest 0.5. In the log and the CLI the home team's line is used, so a negative home line means
+the home team is favored.
+
+**Accuracy** (walk-forward, 1,762 held-out games): the predicted margin is off by **10.95
+points** on average (RMSE 14.0). That is better than an Elo-only spread (11.28) and than always
+predicting the average home margin (13.08), in all four test periods. A typical NBA game still
+lands about 11 points from any pre-game prediction. The spread's uncertainty (about 14 points)
+is close to calibrated: predictions of about a 60% chance to cover covered about 61% of the time.
+When the spread and the win probability pick different favorites (about 3% of games), the game is
+a toss-up and the dashboard says so.
 
 ## Features
 - **Elo** with margin-of-victory scaling, home-court advantage and between-season regression.
@@ -78,7 +99,8 @@ src/
   experiments.py     # Every before/after experiment in RESULTS.md
   backtest.py        # Held-out metrics and calibration
   inference.py       # Feature row for an upcoming game (CLI, slate, dashboard)
-  market_odds.py     # Kalshi snapshots and pre-tip-off price history
+  spread_model.py    # Point-spread model and the config for other numeric targets
+  market_odds.py     # Kalshi game and spread snapshots and pre-tip-off price history (local only)
   schedule.py        # Today's games and tip-off times
   daily_slate.py     # Today's model vs market, logs pre-tip-off predictions
   prediction_log.py  # Append-only prediction log and live track record
@@ -101,6 +123,9 @@ python src/predict.py           # one game from the command line
 streamlit run src/app.py        # dashboard
 python -m pytest tests          # tests
 python src/experiments.py --list  # rerun any experiment from RESULTS.md
+python src/market_odds.py --history          # local Kalshi moneyline history (git-ignored)
+python src/market_odds.py --spread-history   # local Kalshi spread lines (git-ignored, ~2 hours)
+python src/experiments.py spread_calibration # is the spread's uncertainty calibrated?
 ```
 
 ## Refreshing Data

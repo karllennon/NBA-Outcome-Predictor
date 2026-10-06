@@ -1,8 +1,14 @@
 """
-Kalshi NBA game-winner markets (the prices behind PrizePicks game picks), read-only.
+Kalshi NBA game-winner and spread markets (the prices behind PrizePicks game picks), read-only.
 
-Uses Kalshi's public market-data API, which needs no login or API key. This module only reads
-prices; it contains no trading or order code.
+Uses Kalshi's public market-data API (no API key needed for market data). This module only reads
+prices; it contains no trading or order code. Kalshi's API Developer Agreement limits API use to
+a member's own trading and forbids sharing the data, so everything saved here is git-ignored and
+stays on your machine.
+
+Spread markets (series KXNBASPREAD, same event naming): a ladder per team,
+<event>-<TEAM><N> = 'TEAM wins by over N.5 points'; YES pays $1 if it does. The market's line
+is where the favorite's ladder crosses 50 cents (interpolated).
 
     Base URL:   https://external-api.kalshi.com/trade-api/v2  (docs.kalshi.com, October 2026)
     Series:     KXNBAGAME ("NBA Game")
@@ -14,6 +20,7 @@ Market win probability = midpoint of the home team's YES bid and ask.
 
     python src/market_odds.py             # append a snapshot of today's games to data/market_snapshots.csv
     python src/market_odds.py --history   # pre-tip-off prices for past games -> data/market_history.csv
+    python src/market_odds.py --spread-history   # pre-tip-off spread lines -> data/market_spread_history.csv
 """
 import argparse
 import os
@@ -252,12 +259,201 @@ def _save_history(done, rows, path):
     return out
 
 
+# ---------------------------------------------------------------- spread markets
+
+SPREAD_SERIES = 'KXNBASPREAD'
+SPREAD_HISTORY_PATH = 'data/market_spread_history.csv'
+SPREAD_SNAPSHOT_PATH = 'data/market_spread_snapshots.csv'
+
+
+def spread_event_ticker(game_date, away_code, home_code):
+    return event_ticker(game_date, away_code, home_code).replace(SERIES, SPREAD_SERIES, 1)
+
+
+def _ladder_rows(markets):
+    """Market dicts -> DataFrame: TICKER, TEAM, STRIKE, YES_BID, YES_ASK, MID."""
+    rows = []
+    for m in markets:
+        suffix = m['ticker'].rsplit('-', 1)[1]
+        team = ''.join(ch for ch in suffix if ch.isalpha())
+        bid, ask = _dollars(m.get('yes_bid_dollars')), _dollars(m.get('yes_ask_dollars'))
+        rows.append({'TICKER': m['ticker'], 'TEAM': team, 'STRIKE': _dollars(m.get('floor_strike')),
+                     'YES_BID': bid, 'YES_ASK': ask, 'MID': midpoint(bid, ask)})
+    return pd.DataFrame(rows, columns=['TICKER', 'TEAM', 'STRIKE', 'YES_BID', 'YES_ASK', 'MID'])
+
+
+def spread_ladder(ticker, historical=False):
+    """All spread markets of one event (live quotes if the event is open)."""
+    if not historical:
+        data = _get(f'/events/{ticker}', {'with_nested_markets': 'true'}) or {}
+        markets = data.get('markets') or (data.get('event') or {}).get('markets') or []
+        if markets:
+            return _ladder_rows(markets)
+    data = _get('/historical/markets', {'event_ticker': ticker, 'limit': 200}) or {}
+    return _ladder_rows(data.get('markets', []))
+
+
+def implied_line(strikes, mids):
+    """
+    Margin where P(team wins by more than x) crosses 0.5, by linear interpolation along the
+    ladder (strikes ascending, prices falling). None if the ladder never crosses 0.5.
+    """
+    pts = sorted((s, m) for s, m in zip(strikes, mids) if m == m and s == s)
+    for (s0, m0), (s1, m1) in zip(pts, pts[1:]):
+        if m0 >= 0.5 >= m1 and m0 != m1:
+            return s0 + (m0 - 0.5) / (m0 - m1) * (s1 - s0)
+    return None
+
+
+def main_line(ladder, team):
+    """The team's ladder market priced closest to 50 cents (its 'main line'), or None."""
+    t = ladder[ladder['TEAM'] == team].dropna(subset=['MID'])
+    if t.empty:
+        return None
+    return t.loc[(t['MID'] - 0.5).abs().idxmin()]
+
+
+def pregame_spread(event, favorite, tip_et, cutoff, pause=0.15):
+    """
+    Pre-tip-off market line for one past game: binary search along the favorite's ladder for
+    the 50-cent crossing (about five price lookups instead of the whole ladder).
+    Returns FAV, FAV_LINE (favorite's implied margin) and the main-line market's quote.
+    """
+    lad = spread_ladder(event, historical=True)
+    lad = lad[lad['TEAM'] == favorite].dropna(subset=['STRIKE']).sort_values('STRIKE').reset_index(drop=True)
+    if lad.empty:
+        return None
+    settled = tip_et + pd.Timedelta(hours=6) < cutoff
+    quotes = {}
+
+    def mid_at(i):
+        if i not in quotes:
+            bid, ask = pregame_quote(lad.at[i, 'TICKER'], tip_et, settled)
+            quotes[i] = (bid, ask, midpoint(bid, ask))
+            time.sleep(pause)
+        return quotes[i][2]
+
+    lo, hi = 0, len(lad) - 1
+    mid_at(lo)
+    mid_at(hi)
+    while hi - lo > 1:      # prices fall as the strike rises
+        i = (lo + hi) // 2
+        m = mid_at(i)
+        if m != m or m < 0.5:
+            hi = i
+        else:
+            lo = i
+    known = sorted(quotes)
+    line = implied_line([lad.at[i, 'STRIKE'] for i in known], [quotes[i][2] for i in known])
+    priced = [i for i in known if quotes[i][2] == quotes[i][2]]
+    if not priced:
+        return {'FAV': favorite, 'FAV_LINE': line}
+    best = min(priced, key=lambda i: abs(quotes[i][2] - 0.5))
+    bid, ask, m = quotes[best]
+    return {'FAV': favorite, 'FAV_LINE': line, 'MAIN_TICKER': lad.at[best, 'TICKER'],
+            'MAIN_STRIKE': lad.at[best, 'STRIKE'], 'MAIN_YES_BID': bid, 'MAIN_YES_ASK': ask, 'MAIN_MID': m}
+
+
+def build_spread_history(path=SPREAD_HISTORY_PATH, moneyline_path=HISTORY_PATH):
+    """
+    Pre-tip-off spread line for every game in the moneyline history (local, git-ignored).
+    HOME_LINE is in betting convention (negative = home favored). Re-running skips cached games.
+    """
+    ml = pd.read_csv(moneyline_path, dtype={'GAME_ID': str}).dropna(subset=['MARKET_HOME_PROB'])
+    done = pd.read_csv(path, dtype={'GAME_ID': str}) if os.path.exists(path) else pd.DataFrame()
+    done_ids = set(done['GAME_ID']) if len(done) else set()
+    cutoff = pd.Timestamp((_get('/historical/cutoff') or {}).get('market_settled_ts', '2100-01-01'))
+    rows = []
+    for r in ml.itertuples():
+        if r.GAME_ID in done_ids:
+            continue
+        day, away, home = parse_event_ticker(r.EVENT_TICKER)
+        fav = home if r.MARKET_HOME_PROB >= 0.5 else away
+        tip = pd.Timestamp(r.TIP_TIME_ET).tz_localize(ET)
+        try:
+            res = pregame_spread(spread_event_ticker(day, away, home), fav, tip, cutoff)
+        except requests.RequestException:
+            res = None
+        row = {'GAME_ID': r.GAME_ID, 'GAME_DATE': day.date(), 'HOME': home, 'AWAY': away,
+               'TIP_TIME_ET': r.TIP_TIME_ET}
+        if res:
+            row.update(res)
+            if res.get('FAV_LINE') is not None:
+                row['HOME_LINE'] = -res['FAV_LINE'] if fav == home else res['FAV_LINE']
+        rows.append(row)
+        if len(rows) % 100 == 0:
+            print(f"  {len(rows)} games (through {day.date()})", flush=True)
+            _save_history(done, rows, path)
+    return _save_history(done, rows, path)
+
+
+def open_spread_events():
+    events, cursor = [], None
+    while True:
+        params = {'series_ticker': SPREAD_SERIES, 'status': 'open', 'with_nested_markets': 'true', 'limit': 200}
+        if cursor:
+            params['cursor'] = cursor
+        page = _get('/events', params) or {}
+        events += page.get('events', [])
+        cursor = page.get('cursor')
+        if not cursor or not page.get('events'):
+            return events
+
+
+def spread_snapshot(game_date=None, path=SPREAD_SNAPSHOT_PATH):
+    """Append the current spread ladders of a day's games (local, append-only). Returns them."""
+    game_date = pd.Timestamp(game_date or pd.Timestamp.now(tz=ET).date())
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    frames = []
+    for ev in open_spread_events():
+        day, away, home = parse_event_ticker(ev['event_ticker'])
+        if day != game_date:
+            continue
+        lad = _ladder_rows(ev.get('markets', []))
+        if not lad.empty:
+            frames.append(lad.assign(SNAPSHOT_TIME_UTC=now, GAME_DATE=day.date(),
+                                     EVENT_TICKER=ev['event_ticker'], HOME=home, AWAY=away))
+    if not frames:
+        return pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)[['SNAPSHOT_TIME_UTC', 'GAME_DATE', 'EVENT_TICKER', 'HOME', 'AWAY',
+                                               'TICKER', 'TEAM', 'STRIKE', 'YES_BID', 'YES_ASK', 'MID']]
+    df.to_csv(path, mode='a', header=not os.path.exists(path), index=False)
+    return df
+
+
+def market_spread_from_ladder(ladder, home, away):
+    """
+    From one game's ladder: the market's home line (betting convention) and the main-line
+    market of the favorite (the team whose ladder crosses 50 cents at the larger margin).
+    """
+    best = None
+    for team in (home, away):
+        t = ladder[ladder['TEAM'] == team]
+        line = implied_line(t['STRIKE'], t['MID'])
+        if line is not None and (best is None or line > best[1]):
+            best = (team, line)
+    if best is None:
+        return None
+    fav, fav_line = best
+    main = main_line(ladder, fav)
+    out = {'FAV': fav, 'FAV_LINE': fav_line, 'HOME_LINE': -fav_line if fav == home else fav_line}
+    if main is not None:
+        out.update({'MAIN_TICKER': main['TICKER'], 'MAIN_STRIKE': main['STRIKE'],
+                    'MAIN_YES_BID': main['YES_BID'], 'MAIN_YES_ASK': main['YES_ASK'], 'MAIN_MID': main['MID']})
+    return out
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--history', action='store_true')
+    parser.add_argument('--spread-history', action='store_true')
     parser.add_argument('--date', default=None, help='game date for the snapshot (default today, ET)')
     args = parser.parse_args()
-    if args.history:
+    if args.spread_history:
+        h = build_spread_history()
+        n = int(h['HOME_LINE'].notna().sum()) if 'HOME_LINE' in h else 0
+        print(f"{n} of {len(h)} games have a pre-tip-off spread line -> {SPREAD_HISTORY_PATH}")
+    elif args.history:
         hist = build_history()
         print(f"{hist['MARKET_HOME_PROB'].notna().sum()} of {len(hist)} games have a pre-tip-off price "
               f"-> {HISTORY_PATH}")
@@ -269,3 +465,7 @@ if __name__ == "__main__":
             print(snap[['AWAY_TEAM', 'HOME_TEAM', 'COMPETITION', 'MARKET_HOME_PROB',
                         'HOME_YES_BID', 'HOME_YES_ASK']].to_string(index=False))
             print(f"Appended {len(snap)} rows to {SNAPSHOT_PATH}")
+        ladders = spread_snapshot(args.date)
+        if not ladders.empty:
+            print(f"Appended {len(ladders)} spread-ladder rows ({ladders['EVENT_TICKER'].nunique()} games) "
+                  f"to {SPREAD_SNAPSHOT_PATH}")

@@ -1,4 +1,5 @@
 import time
+import numpy as np
 import pandas as pd
 import prediction_log as pl
 
@@ -15,7 +16,7 @@ def test_log_is_append_only_and_scores_the_last_pregame_row(tmp_path):
     path = tmp_path / 'log.csv'
     games = tmp_path / 'games.csv'
     pd.DataFrame({'GAME_ID': ['0022500883', '0022500883'], 'MATCHUP': ['CHA vs. DAL', 'DAL @ CHA'],
-                  'WL': ['W', 'L']}).to_csv(games, index=False)
+                  'WL': ['W', 'L'], 'PLUS_MINUS': [8, -8]}).to_csv(games, index=False)
 
     pl.append([_row('0022500883', 0.60, 0.80)], path)
     first = pd.read_csv(path)
@@ -45,3 +46,20 @@ def test_slate_table_highlights_only_gaps_of_five_points_or_more():
     styler = slate_table(slate)
     styler._compute()
     assert sorted({r for (r, _), css in styler.ctx.items() if css}) == [0]
+
+
+def test_new_columns_never_modify_old_log_rows(tmp_path):
+    path = tmp_path / 'prediction_log.csv'
+    old_cols = ['LOGGED_AT_UTC', 'GAME_ID', 'MODEL_HOME_PROB']
+    pl.append([{'GAME_ID': '0022600001', 'MODEL_HOME_PROB': 0.61}], str(path), columns=old_cols)
+    before = path.read_bytes()
+
+    pl.append([_row('0022600002', 0.55)], str(path))          # current, wider schema
+    assert path.read_bytes() == before                         # old file untouched
+    segs = pl.segments(str(path))
+    assert len(segs) == 2 and segs[0] == str(path)
+
+    log = pl.load(str(path))
+    assert list(log['GAME_ID']) == ['0022600001', '0022600002']
+    assert log.loc[0, 'MODEL_HOME_PROB'] == 0.61 and pd.isna(log.loc[0, 'SPREAD'])
+

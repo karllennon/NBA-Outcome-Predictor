@@ -176,6 +176,12 @@ def matchup_card(g, games):
     ui.html_block(ui.card('Game matchup', body))
 
 
+def dd_result_text(g):
+    """'CHA by 27' from a finished game's score."""
+    m = g['HOME_PTS'] - g['AWAY_PTS']
+    return f"{g['HOME_ABBR'] if m > 0 else g['AWAY_ABBR']} by {abs(m)}"
+
+
 def probability_card(g):
     p, m = g['MODEL_HOME_PROB'], g.get('MARKET_HOME_PROB')
     has_m = m is not None and not pd.isna(m)
@@ -195,6 +201,22 @@ def probability_card(g):
         <div class="cv-prob-val">{gap if has_m else 'n/a'}<span class="sub">{'pts' if has_m else ''}</span></div>
         <div style="margin-top:4px">{gap_pill(p, m)}</div></div>
     </div>{split}"""
+    if g.get('SPREAD_TEXT'):
+        actual = ''
+        if g.get('HOME_PTS') is not None:
+            actual = (f'<div class="cv-prob-cell"><div class="cv-prob-label">Actual result</div>'
+                      f'<div class="cv-prob-val">{ui.esc(dd_result_text(g))}</div></div>')
+        cells += f"""
+    <div class="cv-prob-grid" style="margin-top:10px">
+      <div class="cv-prob-cell"><div class="cv-prob-label">Model spread</div>
+        <div class="cv-prob-val" style="color:#8fbcf3">{ui.esc(g['SPREAD_TEXT'])}</div></div>
+      <div class="cv-prob-cell"><div class="cv-prob-label">Kalshi spread</div>
+        <div class="cv-prob-val" style="color:#f19a75">{ui.esc(g.get('MARKET_SPREAD_TEXT') or 'n/a')}</div></div>
+      {actual}
+    </div>"""
+        if g.get('TOSS_UP'):
+            cells += ('<div class="cv-small" style="margin-top:8px">⚠ The win probability and the spread pick '
+                      'different favorites: this game is close to a toss-up.</div>')
     sub = f"Model favors {fav}"
     if g.get('HOME_WIN') is not None:
         winner = g['HOME_ABBR'] if g['HOME_WIN'] else g['AWAY_ABBR']
@@ -314,11 +336,14 @@ def markets_card(games_today, selected_id, mode):
             f'<tr{cls}><td class="cv-game">{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> {ui.badge(g["HOME_ABBR"], "sm")}</td>'
             f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.pct(p)}</td>'
             f'<td class="num" style="color:#f19a75;font-weight:700">{ui.pct(m) if has_m else "n/a"}</td>'
-            f'<td>{gap_pill(p, m)}</td>{result}</tr>')
+            f'<td>{gap_pill(p, m)}</td>'
+            f'<td class="cv-small" style="white-space:nowrap">{ui.esc(g.get("SPREAD_TEXT") or "–")}'
+            f'{" · " + ui.esc(g["MARKET_SPREAD_TEXT"]) if g.get("MARKET_SPREAD_TEXT") else ""}'
+            f'{" ⚠" if g.get("TOSS_UP") else ""}</td>{result}</tr>')
     head = ('<tr><th>Game</th><th class="num">Model</th><th class="num">Kalshi</th><th>Gap</th>'
-            + ('<th>Model pick</th>' if mode == 'replay' else '') + '</tr>')
+            '<th>Spread · Kalshi</th>' + ('<th>Model pick</th>' if mode == 'replay' else '') + '</tr>')
     body = f'<table class="cv-table">{head}{"".join(rows)}</table>' \
-           f'<div class="cv-small" style="margin-top:8px">Home-team win probability. Kalshi = midpoint of the ' \
+           f'<div class="cv-small" style="margin-top:8px">Home-team win probability; spreads favorite first '            f'(⚠ = win probability and spread disagree, close to a toss-up). Kalshi = midpoint of the ' \
            f'YES bid/ask on its NBA game market (the prices behind PrizePicks game picks). Gaps under 5 points ' \
            f'are within fees and noise; on past games the market was more accurate than the model.</div>'
     ui.html_block(ui.card('Game markets · Kalshi', body, sub=f'{len(games_today)} games'))
@@ -538,6 +563,9 @@ def page_markets():
                   '<div class="cv-mode">Held-out games from the walk-forward test, with Kalshi\'s price at tip-off</div></div></div>')
     metric_tiles()
     preds = load_test_predictions()
+    if not os.path.exists('data/market_history.csv'):
+        st.info("Run `python src/market_odds.py --history` and `python src/train.py` first (Kalshi data stays local).")
+        return
     market = pd.read_csv('data/market_history.csv', dtype={'GAME_ID': str})
     market['GAME_ID'] = market['GAME_ID'].astype(int)
     d = preds.merge(market[['GAME_ID', 'MARKET_HOME_PROB']], on='GAME_ID').dropna(subset=['MARKET_HOME_PROB'])
@@ -678,6 +706,17 @@ def page_track_record():
         fig.update_xaxes(title_text='Games')
         ui.plotly_layout(fig, height=300)
         st.plotly_chart(fig, use_container_width=True, config=ui.PLOTLY_CONFIG)
+    sa = prediction_log.spread_accuracy(record)
+    if sa:
+        rows = (f'<tr><td>Games with a logged spread</td><td class="num">{sa["games"]}</td></tr>'
+                f'<tr><td>Mean absolute error of the predicted margin</td><td class="num">{sa["mae"]:.1f} pts</td></tr>')
+        if sa.get('vs_line_games'):
+            rows += (f'<tr><td>Actual margin landed on the side of the market line the model predicted</td>'
+                     f'<td class="num">{sa["right_side_of_line"]:.1%} of {sa["vs_line_games"]}</td></tr>')
+        ui.html_block(ui.card('Spread accuracy', f'<table class="cv-table">{rows}</table>'
+                              '<div class="cv-small" style="margin-top:8px">About 52-53% on the right side of '
+                              'the line is roughly break-even after fees; a few hundred games are needed before '
+                              'this means much.</div>'))
     if len(record) < 100:
         st.caption(f"Only {len(record)} games so far: these numbers will move a lot until a few hundred are in.")
 
@@ -771,7 +810,7 @@ def page_model():
 
 sidebar()
 pages = [
-    st.Page(page_dashboard, title='Dashboard', icon=':material/sports_basketball:', url_path='dashboard', default=True),
+    st.Page(page_dashboard, title='Dashboard', icon=':material/sports_basketball:', default=True),
     st.Page(page_markets, title='Markets', icon=':material/show_chart:', url_path='markets'),
     st.Page(page_predictor, title='Predictor', icon=':material/tune:', url_path='predictor'),
     st.Page(page_track_record, title='Track Record', icon=':material/fact_check:', url_path='track-record'),
