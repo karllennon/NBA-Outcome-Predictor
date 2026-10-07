@@ -92,10 +92,13 @@ Per strategy and venue:
 - bets, win rate vs average price paid
 - P&L per $1 and its standard error; ROI on money staked
 - running P&L, maximum drawdown and worst losing streak on a $100 paper bankroll (flat $1 per bet)
-- **closing line value (CLV):** the tip-off midpoint minus the logged entry midpoint for the side
-  taken, in cents. If the market keeps moving toward our side before tip-off, the model is seeing
-  something real. CLV is much less noisy than wins and losses, so it can say something within
-  weeks; P&L needs seasons.
+- **closing line value (CLV):** the Kalshi midpoint at tip-off minus the first midpoint logged
+  that day (the first slate run, about 11 AM ET), for the side taken, in cents ("day CLV"). If the
+  market keeps moving toward our side during the day, the model is seeing something real. CLV is
+  much less noisy than wins and losses, so it can say something within weeks; P&L needs seasons.
+  The move from the entry price (30+ minutes before tip) to tip-off is also reported, but it is
+  usually near zero: checked on 2025-26, prices barely move in the last hour before tip-off, so
+  any information arrives earlier in the day.
 
 ## Decision rules (written in advance)
 
@@ -103,7 +106,7 @@ Judged only on games from 2026-10-20 on.
 
 | Strategy | Stop ("dead") | Promising (not proven) |
 |---|---|---|
-| S1 | After 100 bets, P&L <= -2c per $1 | After 150+ bets, P&L > 0 with t >= 2, or after 50+ bets, CLV > 0 with t >= 2 |
+| S1 | After 100 bets, P&L <= -2c per $1 | After 150+ bets, P&L > 0 with t >= 2, or after 50+ bets, day CLV > 0 with t >= 2 |
 | S2, S3a | After 100 bets, P&L <= -2c per $1 | Same as S1; still needs another season to confirm, since these are exploratory |
 | S3, S4 | Not judged; they are the yardsticks | |
 | S5 | After 100 lineups, return <= -12% per $1 (about what fees alone cost) | After 100+ lineups, return > 0 with t >= 2 |

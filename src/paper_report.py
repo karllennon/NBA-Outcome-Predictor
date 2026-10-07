@@ -12,8 +12,10 @@ logged with it). Strategies S1-S6 are settled against results and priced three w
                        legs' asks: fees charged once on the combined price
 
 The PrizePicks formulas were reverse-engineered from published and in-app multipliers in
-October 2026 and are estimates. Closing line value (CLV) compares the entry midpoint with the
-tip-off midpoint from TIP_PRICES_PATH when it exists, else with the last pre-tip-off logged price.
+October 2026 and are estimates. Closing line value (CLV), in cents for the side taken, ends at
+the tip-off midpoint from TIP_PRICES_PATH (else the last pre-tip-off logged price) and starts at
+either the entry midpoint ("entry CLV") or the first midpoint logged that day ("day CLV"). Prices
+barely move in the last hour before tip-off (checked on 2025-26), so day CLV is the informative one.
 
     python src/paper_report.py                     # writes data/paper_report.md (git-ignored)
     python src/paper_report.py --since 2026-11-01
@@ -80,7 +82,8 @@ def _logged_et(log):
 def entries(log, since=SEASON_START, minutes=ENTRY_MINUTES):
     """
     One entry row per regular-season game: the last row logged at least `minutes` before tip-off.
-    Also adds CLOSE_HOME_MID, the midpoint of the last row logged before tip-off (for CLV).
+    Also adds, for CLV, OPEN_HOME_MID (the first row logged before tip-off, i.e. the day's first
+    slate run) and CLOSE_HOME_MID (the last row logged before tip-off), with their times.
     Returns (entries, coverage dict).
     """
     log = log.copy()
@@ -99,6 +102,9 @@ def entries(log, since=SEASON_START, minutes=ENTRY_MINUTES):
     close = pre.groupby('GAME_ID').tail(1).set_index('GAME_ID')
     entry['CLOSE_HOME_MID'] = close['HOME_MID'].reindex(entry.index)
     entry['CLOSE_LOGGED_ET'] = close['LOGGED_ET'].reindex(entry.index)
+    first = pre.groupby('GAME_ID').head(1).set_index('GAME_ID')
+    entry['OPEN_HOME_MID'] = first['HOME_MID'].reindex(entry.index)
+    entry['OPEN_LOGGED_ET'] = first['LOGGED_ET'].reindex(entry.index)
     entry = entry.reset_index()
     coverage = {'games logged': games, 'with an entry (logged 30+ min before tip)': len(entry),
                 'no tip-off time': log.loc[log['TIP_TIME_ET'].isna(), 'GAME_ID'].nunique(),
@@ -152,8 +158,9 @@ def model_view(entry, model='live'):
 def legs(entry, margins, tip_mid=None):
     """
     Every strategy leg as one row: strategy, GAME_ID, GAME_DATE, TIP_TIME_ET, team, fill, mid, p,
-    won (None while the game is unplayed), clv (cents, moneyline legs only). `entry` is one
-    model's view (model_view).
+    won (None while the game is unplayed), and for moneyline legs clv (entry -> tip-off) and
+    clv_day (first logged price of the day -> tip-off), in cents, with clv_day_hours between them.
+    `entry` is one model's view (model_view).
     """
     rows = []
     for r in entry.to_dict('records'):
@@ -171,8 +178,15 @@ def legs(entry, margins, tip_mid=None):
             entry_mid = r['HOME_MID'] if home_side else 1 - r['HOME_MID']
             close_mid = None if close is None or close != close else (close if home_side else 1 - close)
             clv = None if close_mid is None or entry_mid != entry_mid else (close_mid - entry_mid) * 100
+            open_home = r.get('OPEN_HOME_MID')
+            open_mid = None if open_home is None or open_home != open_home else (
+                open_home if home_side else 1 - open_home)
+            clv_day = None if close_mid is None or open_mid is None else (close_mid - open_mid) * 100
+            hours = None
+            if r.get('OPEN_LOGGED_ET') is not None and r.get('TIP_TIME_ET') is not None:
+                hours = (pd.Timestamp(r['TIP_TIME_ET']) - pd.Timestamp(r['OPEN_LOGGED_ET'])).total_seconds() / 3600
             rows.append({**base, 'strategy': strategy, 'team': team, 'fill': fill, 'mid': mid, 'p': p,
-                         'won': won, 'clv': clv})
+                         'won': won, 'clv': clv, 'clv_day': clv_day, 'clv_day_hours': hours})
 
         bid, ask = r.get('MARKET_YES_BID'), r.get('MARKET_YES_ASK')
         if bid == bid and ask == ask and bid is not None and ask is not None:
@@ -204,9 +218,9 @@ def legs(entry, margins, tip_mid=None):
                 won = bool((fav_margin > r['SPREAD_STRIKE']) == (sside == 'YES'))
             rows.append({**base, 'strategy': 'S2', 'team': r.get('SPREAD_FAV') if sside == 'YES' else 'dog',
                          'fill': r['SPREAD_FILL'], 'mid': r['SPREAD_MID'], 'p': r['SPREAD_P'], 'won': won,
-                         'clv': None})
+                         'clv': None, 'clv_day': None, 'clv_day_hours': None})
     out = pd.DataFrame(rows, columns=['strategy', 'GAME_ID', 'GAME_DATE', 'TIP_TIME_ET', 'MODEL_VERSION', 'team',
-                                      'fill', 'mid', 'p', 'won', 'clv'])
+                                      'fill', 'mid', 'p', 'won', 'clv', 'clv_day', 'clv_day_hours'])
     out = out[(out['fill'] > 0) & (out['fill'] < 1)]
     return out.sort_values(['GAME_DATE', 'TIP_TIME_ET', 'GAME_ID']).reset_index(drop=True)
 
@@ -296,15 +310,18 @@ def strategy_tables(L):
         bk = bankroll(k_pnl / k_cost if len(g) else [], g['won'])
         c = g['clv'].dropna()
         sc = summary(c.values, np.ones(len(c)), np.ones(len(c)))
+        cd = g['clv_day'].dropna()
+        sd = summary(cd.values, np.ones(len(cd)), np.ones(len(cd)))
         singles.append({'id': code, 'strategy': label, 'bets': sk['n'], 'win rate': sk['win_rate'],
                         'avg price': sk['avg_price'], 'Kalshi c/contract': sk['mean'] * 100,
                         'Kalshi SE': sk['se'] * 100, 'Kalshi return/$': k_pnl.sum() / k_cost.sum() if len(g) else np.nan,
                         'PrizePicks return/$': sp['mean'], 'PrizePicks SE': sp['se'],
                         '$100 end': bk['end'], 'max drawdown $': bk['max_drawdown'], 'worst streak': bk['worst_streak']})
-        clv_rows.append({'id': code, 'legs with CLV': sc['n'], 'CLV c (mean)': sc['mean'], 'CLV SE': sc['se'],
-                         't': sc['t']})
+        clv_rows.append({'id': code, 'legs': sd['n'], 'day CLV c': sd['mean'], 'day CLV SE': sd['se'],
+                         'day t': sd['t'], 'median hours before tip': g['clv_day_hours'].median() if len(g) else np.nan,
+                         'entry CLV c': sc['mean'], 'entry CLV SE': sc['se']})
         if code != 'S5/S6 legs':
-            statuses[code] = status(code, sk, sc if sc['n'] else None)
+            statuses[code] = status(code, sk, sd if sd['n'] else None)
 
     lineup_rows, lineup_detail = [], {}
     for code in STRATEGIES:
@@ -398,7 +415,8 @@ def _md(df, fmt):
 PCT = {'win rate', 'hit rate', 'PrizePicks SE', 'SE', 'live accuracy', 'frozen accuracy'}
 SIGNED_PCT = {'Kalshi return/$', 'PrizePicks return/$', 'return/$'}
 FORMATS = {'avg price': '{:.3f}', 'avg multiplier': '{:.2f}x', 'Kalshi c/contract': '{:+.1f}',
-           'CLV c (mean)': '{:+.1f}', 'Kalshi SE': '{:.1f}', 'CLV SE': '{:.1f}', '$100 end': '${:.0f}',
+           'day CLV c': '{:+.2f}', 'entry CLV c': '{:+.2f}', 'Kalshi SE': '{:.1f}', 'day CLV SE': '{:.2f}',
+           'entry CLV SE': '{:.2f}', 'day t': '{:+.2f}', 'median hours before tip': '{:.1f}', '$100 end': '${:.0f}',
            'max drawdown $': '${:.0f}', 't': '{:+.2f}', 'live log loss': '{:.4f}', 'frozen log loss': '{:.4f}',
            'market log loss': '{:.4f}', 'live - frozen': '{:+.4f}', 'diff SE': '{:.4f}'}
 
@@ -442,7 +460,10 @@ def report(tables, since=SEASON_START):
                   f'## {name} model: lineups (PrizePicks pricing, one per day from the first k legs by tip-off)', '',
                   _md(t['lineups'], _fmt), '',
                   f'## {name} model: closing line value (cents per leg; positive = the market moved toward our '
-                  'side before tip-off)', '', _md(t['clv'], _fmt), '']
+                  'side before tip-off)', '',
+                  'Day CLV: first price logged that day to the tip-off price (the plan\'s CLV rule uses this). '
+                  'Entry CLV: entry price (30+ min before tip) to tip-off; usually near zero.', '',
+                  _md(t['clv'], _fmt), '']
     return '\n'.join(lines)
 
 

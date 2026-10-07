@@ -42,6 +42,7 @@ def test_entry_is_the_last_row_30_minutes_before_tip_and_close_is_the_last_prega
     assert entry['MODEL_HOME_PROB'].iloc[0] == 0.62
     assert entry['HOME_MID'].iloc[0] == pytest.approx(0.59)
     assert entry['CLOSE_HOME_MID'].iloc[0] == pytest.approx(0.62)
+    assert entry['OPEN_HOME_MID'].iloc[0] == pytest.approx(0.56)      # first run of the day
 
 
 def test_game_logged_only_inside_30_minutes_has_no_entry():
@@ -101,3 +102,19 @@ def test_decision_rules_follow_the_plan():
     assert R.status('S5', s(100, -0.15, -1)) == 'STOP (dead)'
     assert R.status('S6', s(5, 0.5, 1)) == 'watch only'
     assert R.status('S3', s(500, -0.1, -5)) == 'yardstick'
+
+
+def test_day_clv_runs_from_the_first_price_of_the_day_to_tip_off(tmp_path):
+    tip = '2026-10-21 19:00'
+    log = pd.DataFrame([
+        _log_row('0022600001', tip, 480, 0.55, 0.44, 0.46, dog=True),   # 11 AM: home 45c
+        _log_row('0022600001', tip, 40, 0.55, 0.49, 0.51, dog=False),   # entry: 50c
+    ])
+    tips = tmp_path / 'tips.csv'
+    pd.DataFrame([{'GAME_ID': '0022600001', 'TIP_HOME_MID': 0.55}]).to_csv(tips, index=False)
+    entry, _ = R.entries(log, since='2026-10-20')
+    L = R.legs(entry, R.results(_games(tmp_path, {'0022600001': 3})), R.tip_prices(str(tips)))
+    leg = L[L['strategy'] == 'S4'].iloc[0]                             # model picks the home team
+    assert leg['clv'] == pytest.approx(5.0)                            # 50c -> 55c
+    assert leg['clv_day'] == pytest.approx(10.0)                       # 45c -> 55c
+    assert leg['clv_day_hours'] == pytest.approx(8.0)
