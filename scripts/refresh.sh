@@ -18,6 +18,8 @@ echo "=== Refresh started $(date) ==="
 "$PY" -u src/injury_reports.py || echo "[!] injury report fetch failed"
 # Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)
 "$PY" -u src/daily_slate.py || echo "[!] slate / prediction log failed"
+# Tip-off prices of last night's logged games (for closing line value; local, git-ignored)
+"$PY" -u src/market_odds.py --tip-prices || echo "[!] tip-off price fetch failed"
 # Paper-trade report from the log and last night's results (local, git-ignored)
 "$PY" -u src/paper_report.py > /dev/null || echo "[!] paper-trade report failed"
 echo "=== Refresh finished $(date) ==="

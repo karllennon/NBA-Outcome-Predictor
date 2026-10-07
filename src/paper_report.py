@@ -29,6 +29,7 @@ import pandas as pd
 
 import decisions as D
 import prediction_log as pl
+from market_odds import TIP_PRICES_PATH   # written by: python src/market_odds.py --tip-prices
 
 SEASON_START = '2026-10-20'
 REGULAR_SEASON = '002'               # GAME_ID prefix (after zero padding) of regular-season games
@@ -37,7 +38,6 @@ PRIZEPICKS_FEE = 0.02
 LINEUP_SIZES = (2, 3, 4, 6)
 START_BANKROLL = 100.0
 REPORT_PATH = 'data/paper_report.md'
-TIP_PRICES_PATH = 'data/tip_prices.csv'      # optional: GAME_ID, TIP_HOME_MID
 ET = 'America/New_York'
 
 STRATEGIES = {
@@ -269,8 +269,9 @@ def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_
     settled = L[L['won'].notna()].copy()
     settled['won'] = settled['won'].astype(bool)
     coverage.update({'legs pending (unplayed)': int(L['won'].isna().sum()),
-                     'CLV source': 'tip-off prices file' if tip_prices(tip_path) is not None
-                     else 'last pre-tip-off logged price (tip-off backfill not built yet)'})
+                     'CLV source': 'Kalshi price at tip-off (data/tip_prices.csv); last pre-tip-off logged price '
+                     'where missing' if tip_prices(tip_path) is not None
+                     else 'last pre-tip-off logged price (run: python src/market_odds.py --tip-prices)'})
 
     singles, clv_rows, statuses = [], [], {}
     for code, label in STRATEGIES.items():

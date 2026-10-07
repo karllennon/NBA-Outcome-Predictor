@@ -21,6 +21,7 @@ Market win probability = midpoint of the home team's YES bid and ask.
     python src/market_odds.py             # append a snapshot of today's games to data/market_snapshots.csv
     python src/market_odds.py --history   # pre-tip-off prices for past games -> data/market_history.csv
     python src/market_odds.py --spread-history   # pre-tip-off spread lines -> data/market_spread_history.csv
+    python src/market_odds.py --tip-prices   # tip-off prices of logged games -> data/tip_prices.csv
 """
 import argparse
 import os
@@ -181,6 +182,21 @@ def latest_snapshot(game_date=None, path=SNAPSHOT_PATH):
 
 # ---------------------------------------------------------------- history
 
+def _candles_path(market_ticker, settled_before_cutoff):
+    return (f'/historical/markets/{market_ticker}/candlesticks' if settled_before_cutoff
+            else f'/series/{SERIES}/markets/{market_ticker}/candlesticks')
+
+
+def _last_quote(data, end):
+    """(bid, ask) closing the last candlestick that ends at or before `end` with a valid quote."""
+    candles = [c for c in (data or {}).get('candlesticks', []) if c['end_period_ts'] <= end]
+    for c in reversed(candles):
+        bid, ask = _dollars((c.get('yes_bid') or {}).get('close')), _dollars((c.get('yes_ask') or {}).get('close'))
+        if 0 <= bid < ask <= 1:
+            return bid, ask
+    return float('nan'), float('nan')
+
+
 def pregame_quote(market_ticker, tip_time, settled_before_cutoff, hours=6):
     """
     (bid, ask) for a market from the last hourly candlestick ending at or before tip-off.
@@ -188,17 +204,21 @@ def pregame_quote(market_ticker, tip_time, settled_before_cutoff, hours=6):
     """
     end = int(pd.Timestamp(tip_time).timestamp())
     params = {'start_ts': end - hours * 3600, 'end_ts': end, 'period_interval': 60}
-    path = (f'/historical/markets/{market_ticker}/candlesticks' if settled_before_cutoff
-            else f'/series/{SERIES}/markets/{market_ticker}/candlesticks')
-    data = _get(path, params)
-    if not data:
-        return float('nan'), float('nan')
-    candles = [c for c in data.get('candlesticks', []) if c['end_period_ts'] <= end]
-    for c in reversed(candles):
-        bid, ask = _dollars((c.get('yes_bid') or {}).get('close')), _dollars((c.get('yes_ask') or {}).get('close'))
-        if 0 <= bid < ask <= 1:
-            return bid, ask
-    return float('nan'), float('nan')
+    return _last_quote(_get(_candles_path(market_ticker, settled_before_cutoff), params), end)
+
+
+def tip_quote(market_ticker, tip_time, settled_before_cutoff, minutes=60):
+    """
+    (bid, ask, source) at scheduled tip-off: the last 1-minute candlestick ending at or before
+    tip-off within `minutes` (quiet minutes have no candle), else the last hourly candle.
+    """
+    end = int(pd.Timestamp(tip_time).timestamp())
+    params = {'start_ts': end - minutes * 60, 'end_ts': end, 'period_interval': 1}
+    bid, ask = _last_quote(_get(_candles_path(market_ticker, settled_before_cutoff), params), end)
+    if bid == bid:
+        return bid, ask, '1-minute'
+    bid, ask = pregame_quote(market_ticker, tip_time, settled_before_cutoff)
+    return bid, ask, ('hourly' if bid == bid else 'none')
 
 
 def tip_times_from_reports():
@@ -255,6 +275,52 @@ def build_history(games_path='data/raw_nba_data.csv', path=HISTORY_PATH, since='
 
 def _save_history(done, rows, path):
     out = pd.concat([done, pd.DataFrame(rows)], ignore_index=True) if len(done) else pd.DataFrame(rows)
+    out.to_csv(path, index=False)
+    return out
+
+
+TIP_PRICES_PATH = 'data/tip_prices.csv'
+TIP_PRICE_COLUMNS = ['GAME_ID', 'GAME_DATE', 'EVENT_TICKER', 'TIP_TIME_ET', 'TIP_HOME_BID', 'TIP_HOME_ASK',
+                     'TIP_HOME_MID', 'SOURCE', 'FETCHED_AT_UTC']
+
+
+def build_tip_prices(log=None, path=TIP_PRICES_PATH, now=None, retry_days=3, pause=0.1):
+    """
+    Home-team price at scheduled tip-off for every regular-season game in the prediction log that
+    has tipped off (for closing line value in paper_report.py). Tip times and teams come from the
+    log. Games already fetched are skipped; games with no price yet are retried for `retry_days`
+    after tip-off. Cached in data/tip_prices.csv (git-ignored).
+    """
+    import prediction_log
+    log = prediction_log.load() if log is None else log
+    now = pd.Timestamp.now(tz=ET).tz_localize(None) if now is None else pd.Timestamp(now)
+    done = pd.read_csv(path, dtype={'GAME_ID': str}) if os.path.exists(path) else pd.DataFrame(columns=TIP_PRICE_COLUMNS)
+    if log.empty:
+        return done
+    games = log.assign(GAME_ID=log['GAME_ID'].astype(str).str.zfill(10),
+                       TIP_TIME_ET=pd.to_datetime(log['TIP_TIME_ET'], errors='coerce'))
+    games = games[games['GAME_ID'].str.startswith('002') & games['TIP_TIME_ET'].notna()]
+    games = games.sort_values('LOGGED_AT_UTC').groupby('GAME_ID').tail(1)
+    games = games[games['TIP_TIME_ET'] <= now - pd.Timedelta(minutes=5)]
+    have = set(done.loc[done['TIP_HOME_MID'].notna(), 'GAME_ID'])
+    retry_from = now - pd.Timedelta(days=retry_days)
+    tried = set(done.loc[done['TIP_HOME_MID'].isna() & (pd.to_datetime(done['TIP_TIME_ET']) < retry_from), 'GAME_ID'])
+    todo = games[~games['GAME_ID'].isin(have | tried)]
+    if todo.empty:
+        return done
+    cutoff = pd.Timestamp((_get('/historical/cutoff') or {}).get('market_settled_ts', '2100-01-01'))
+    fetched_at = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    rows = []
+    for g in todo.itertuples():
+        tip_et = pd.Timestamp(g.TIP_TIME_ET).tz_localize(ET)
+        ticker = event_ticker(g.GAME_DATE, g.AWAY_ABBR, g.HOME_ABBR)
+        bid, ask, source = tip_quote(f'{ticker}-{g.HOME_ABBR}', tip_et, tip_et + pd.Timedelta(hours=6) < cutoff)
+        rows.append({'GAME_ID': g.GAME_ID, 'GAME_DATE': pd.Timestamp(g.GAME_DATE).date(), 'EVENT_TICKER': ticker,
+                     'TIP_TIME_ET': g.TIP_TIME_ET, 'TIP_HOME_BID': bid, 'TIP_HOME_ASK': ask,
+                     'TIP_HOME_MID': midpoint(bid, ask), 'SOURCE': source, 'FETCHED_AT_UTC': fetched_at})
+        time.sleep(pause)
+    out = pd.concat([done[~done['GAME_ID'].isin(todo['GAME_ID'])], pd.DataFrame(rows)], ignore_index=True)
+    out = out.reindex(columns=TIP_PRICE_COLUMNS)
     out.to_csv(path, index=False)
     return out
 
@@ -447,9 +513,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--history', action='store_true')
     parser.add_argument('--spread-history', action='store_true')
+    parser.add_argument('--tip-prices', action='store_true',
+                        help='tip-off prices for logged games that have started -> data/tip_prices.csv')
     parser.add_argument('--date', default=None, help='game date for the snapshot (default today, ET)')
     args = parser.parse_args()
-    if args.spread_history:
+    if args.tip_prices:
+        tp = build_tip_prices()
+        n = int(tp['TIP_HOME_MID'].notna().sum()) if len(tp) else 0
+        print(f"{n} of {len(tp)} logged games have a tip-off price -> {TIP_PRICES_PATH}")
+    elif args.spread_history:
         h = build_spread_history()
         n = int(h['HOME_LINE'].notna().sum()) if 'HOME_LINE' in h else 0
         print(f"{n} of {len(h)} games have a pre-tip-off spread line -> {SPREAD_HISTORY_PATH}")

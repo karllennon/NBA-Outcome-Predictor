@@ -126,10 +126,11 @@ Building a lineup to read its payout does not require submitting it.
   tip-off order from `TIP_TIME_ET`); no new log columns are needed.
 - Done: `scripts/slate.bat` / `slate.sh` (injury report + slate only, for repeated runs).
 - Done: `src/paper_report.py` applies these rules to the log and writes the git-ignored
-  `data/paper_report.md`; the morning refresh rebuilds it. CLV uses the last pre-tip-off logged
-  price until the tip-off price backfill exists.
-- To add (needs approval before any code): a nightly backfill of the tip-off price for each
-  logged game using the existing Kalshi history code. Outputs stay local and git-ignored.
+  `data/paper_report.md`; the morning refresh rebuilds it.
+- Done: `python src/market_odds.py --tip-prices` saves each logged game's Kalshi price at
+  scheduled tip-off (last 1-minute candle, else the last hourly one) to the git-ignored
+  `data/tip_prices.csv`; the morning refresh runs it before the report, and the report's CLV
+  uses it (falling back to the last pre-tip-off logged price).
 - For the frozen model: save a copy of the model on 2026-10-19 and log its probabilities next to
   the live model's (new columns, e.g. `FROZEN_HOME_PROB`, `FROZEN_MODEL_VERSION`; a new log
   segment, earlier rows untouched).
