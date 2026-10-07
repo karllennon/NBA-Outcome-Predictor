@@ -13,6 +13,8 @@ echo === Refresh started %DATE% %TIME% ===
 "%PY%" -u src\ingest.py || goto :fail
 "%PY%" -u src\data_pipeline.py || goto :fail
 "%PY%" -u src\train.py || goto :fail
+REM Freeze a copy of the trained models for the season's paper test (once, on/after 2026-10-19)
+"%PY%" -u src\frozen_model.py --freeze-on 2026-10-19 || echo [!] model freeze failed
 REM Archive the latest injury report and today's Kalshi prices (non-fatal: offseason or outage)
 "%PY%" -u src\injury_reports.py || echo [!] injury report fetch failed
 REM Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)

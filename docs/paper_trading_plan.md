@@ -42,9 +42,11 @@ The plan runs for one season: from 2026-10-20 to the last regular-season game (A
 then a final review ("cash out" on paper). The model is expected to improve along the way, so
 two models are logged side by side:
 
-- **Frozen model:** the shipped model as of 2026-10-19, kept unchanged all season (daily
-  retraining on newly played games only, same features and settings). Its picks are the clean
-  test of the rules above.
+- **Frozen model:** a copy of the trained win-probability and spread models saved on
+  2026-10-19 and never refit. Its inputs (Elo, form, injuries) still update with every game;
+  only its weights stay fixed (the replay below found fixed weights about as accurate as daily
+  refits). Its picks are the clean test of the rules above, and the report judges the decision
+  rules on it.
 - **Live model:** the model as it improves. Every pick is tagged with its `MODEL_VERSION`.
 
 The live model refits after every game day on all games so far, with every season weighted
@@ -131,9 +133,12 @@ Building a lineup to read its payout does not require submitting it.
   scheduled tip-off (last 1-minute candle, else the last hourly one) to the git-ignored
   `data/tip_prices.csv`; the morning refresh runs it before the report, and the report's CLV
   uses it (falling back to the last pre-tip-off logged price).
-- For the frozen model: save a copy of the model on 2026-10-19 and log its probabilities next to
-  the live model's (new columns, e.g. `FROZEN_HOME_PROB`, `FROZEN_MODEL_VERSION`; a new log
-  segment, earlier rows untouched).
+- Done: `src/frozen_model.py`. The morning refresh copies the models to the git-ignored
+  `models/frozen/` (with a manifest: date, version, features) on the first run on or after
+  2026-10-19, and never overwrites them. The slate logs the frozen model's probability, margin,
+  pick and spread decision next to the live model's (`FROZEN_*` columns, a new log segment;
+  earlier rows untouched). The report shows both models and a monthly live / frozen / market
+  comparison for the reviews. Back up `models/frozen/` if you reinstall or move machines.
 - Timing (checked 2026-10-06): no scheduled task runs the refresh or the slate on this machine,
   and the GitHub workflow is manual-only and does not run the slate. The refresh scripts suggest
   10:00 AM, but at that hour the slate uses an old injury report: in 2025-26, between the first

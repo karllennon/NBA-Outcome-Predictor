@@ -86,6 +86,25 @@ def decision_fields(row, report_time=None):
     return out
 
 
+FROZEN_FIELDS = ['PICK_TEAM', 'PICK_SIDE', 'PICK_P', 'PICK_MID', 'PICK_FILL', 'PICK_MARKET_UNDERDOG',
+                 'SPREAD_SIDE', 'SPREAD_P', 'SPREAD_MID', 'SPREAD_FILL', 'SPREAD_EDGE_PTS']
+
+
+def frozen_fields(row, frozen, features, report_time=None):
+    """FROZEN_* columns: the frozen model's probability, margin and decisions on this row's prices."""
+    if frozen is None:
+        return {}
+    try:
+        prob, margin, sigma = frozen.predict(features)
+    except KeyError as e:          # a feature the frozen model needs is no longer computed
+        print(f"[!] frozen model skipped: missing feature {e}")
+        return {}
+    d = decision_fields({**row, 'MODEL_HOME_PROB': prob, 'MODEL_HOME_MARGIN': margin,
+                         'SPREAD_SIGMA': sigma}, report_time)
+    return {'FROZEN_MODEL_VERSION': frozen.version, 'FROZEN_HOME_PROB': prob, 'FROZEN_HOME_MARGIN': margin,
+            **{f'FROZEN_{k}': d.get(k) for k in FROZEN_FIELDS}}
+
+
 def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
     """
     One row per regular-season or playoff game on `game_date` (default today, Eastern):
@@ -108,6 +127,8 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
     if predictor is None:
         predictor = GamePredictor()
         predictor.load_injury_report()
+    import frozen_model
+    frozen = frozen_model.load()
 
     try:
         market = market_odds.snapshot(game_date) if snapshot else market_odds.games_on(game_date)
@@ -145,6 +166,7 @@ def build_slate(game_date=None, predictor=None, log=True, snapshot=True):
                                  abbr.get(g.HOME_TEAM, g.HOME_TEAM[:3]), abbr.get(g.AWAY_TEAM, g.AWAY_TEAM[:3])))
         row['MARKET_TIME_ET'] = None if m is None else _utc_to_et(m['SNAPSHOT_TIME_UTC'])
         row.update(decision_fields(row, report_time))
+        row.update(frozen_fields(row, frozen, res['features'], report_time))
         rows.append(row)
         pregame = g.STATUS == 'scheduled' and (pd.isna(g.TIP_TIME_ET) or now_et < g.TIP_TIME_ET)
         if log and pregame:

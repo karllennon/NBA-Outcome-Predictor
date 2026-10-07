@@ -9,6 +9,7 @@ data/team_game_features.csv
 
 # Model file
 models/nba_model.joblib
+models/frozen/
 
 # Python
 venv/

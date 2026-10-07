@@ -128,10 +128,32 @@ def _is_true(x):
     return x in (True, 'True', 'true', 1, '1')
 
 
+MODEL_COLUMNS = ['PICK_TEAM', 'PICK_SIDE', 'PICK_P', 'PICK_MID', 'PICK_FILL', 'PICK_MARKET_UNDERDOG',
+                 'SPREAD_SIDE', 'SPREAD_P', 'SPREAD_MID', 'SPREAD_FILL', 'SPREAD_EDGE_PTS']
+
+
+def model_view(entry, model='live'):
+    """
+    The entry rows as seen by one model. 'frozen' swaps in the FROZEN_* columns (probability,
+    pick, spread decision) and drops games logged before the freeze; prices are shared.
+    """
+    if model == 'live':
+        return entry
+    if 'FROZEN_HOME_PROB' not in entry:
+        return entry.iloc[0:0]
+    e = entry[entry['FROZEN_HOME_PROB'].notna()].copy()
+    e['MODEL_HOME_PROB'] = e['FROZEN_HOME_PROB']
+    e['MODEL_VERSION'] = e['FROZEN_MODEL_VERSION']
+    for c in MODEL_COLUMNS:
+        e[c] = e[f'FROZEN_{c}'] if f'FROZEN_{c}' in e else np.nan
+    return e
+
+
 def legs(entry, margins, tip_mid=None):
     """
     Every strategy leg as one row: strategy, GAME_ID, GAME_DATE, TIP_TIME_ET, team, fill, mid, p,
-    won (None while the game is unplayed), clv (cents, moneyline legs only).
+    won (None while the game is unplayed), clv (cents, moneyline legs only). `entry` is one
+    model's view (model_view).
     """
     rows = []
     for r in entry.to_dict('records'):
@@ -259,20 +281,10 @@ def _running(n, unit):
     return f'running: neither rule met yet ({n} {unit})'
 
 
-def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_path=TIP_PRICES_PATH):
-    """All report tables as DataFrames (no file output)."""
-    log = pl.load() if log is None else log
-    if log is None or log.empty:
-        return None
-    entry, coverage = entries(log, since)
-    L = legs(entry, results(games_path), tip_prices(tip_path))
+def strategy_tables(L):
+    """Single-bet, lineup and CLV tables and the plan's decision status for one model's legs."""
     settled = L[L['won'].notna()].copy()
     settled['won'] = settled['won'].astype(bool)
-    coverage.update({'legs pending (unplayed)': int(L['won'].isna().sum()),
-                     'CLV source': 'Kalshi price at tip-off (data/tip_prices.csv); last pre-tip-off logged price '
-                     'where missing' if tip_prices(tip_path) is not None
-                     else 'last pre-tip-off logged price (run: python src/market_odds.py --tip-prices)'})
-
     singles, clv_rows, statuses = [], [], {}
     for code, label in STRATEGIES.items():
         g = settled[settled['strategy'] == code]
@@ -311,8 +323,68 @@ def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_
             if tag:
                 statuses[tag] = status(tag, s)
                 lineup_detail[tag] = lu
-    return {'coverage': coverage, 'singles': pd.DataFrame(singles), 'lineups': pd.DataFrame(lineup_rows),
-            'clv': pd.DataFrame(clv_rows), 'status': statuses, 'legs': L, 'lineup_detail': lineup_detail}
+    return {'singles': pd.DataFrame(singles), 'lineups': pd.DataFrame(lineup_rows), 'clv': pd.DataFrame(clv_rows),
+            'status': statuses, 'legs': L, 'lineup_detail': lineup_detail}
+
+
+def _log_loss(y, p):
+    p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
+    return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+
+
+def model_comparison(entry, margins):
+    """
+    Live vs frozen model vs market on the same finished games (both models and a price logged),
+    by month and for the season: log loss, accuracy, and the paired live-minus-frozen log loss.
+    """
+    if 'FROZEN_HOME_PROB' not in entry:
+        return pd.DataFrame()
+    e = entry[entry['FROZEN_HOME_PROB'].notna() & entry['HOME_MID'].notna()].copy()
+    e['margin'] = e['GAME_ID'].map(margins)
+    e = e[e['margin'].notna() & (e['margin'] != 0)]
+    if e.empty:
+        return pd.DataFrame()
+    e['y'] = (e['margin'] > 0).astype(int)
+    e['month'] = pd.to_datetime(e['GAME_DATE']).dt.to_period('M').astype(str)
+    rows = []
+    for month, g in list(e.groupby('month')) + [('Season', e)]:
+        ll = {m: _log_loss(g['y'].values, g[c].values) for m, c in
+              (('live', 'MODEL_HOME_PROB'), ('frozen', 'FROZEN_HOME_PROB'), ('market', 'HOME_MID'))}
+        d = ll['live'] - ll['frozen']
+        rows.append({'month': month, 'games': len(g), 'live log loss': ll['live'].mean(),
+                     'frozen log loss': ll['frozen'].mean(), 'market log loss': ll['market'].mean(),
+                     'live - frozen': d.mean(), 'diff SE': d.std(ddof=1) / np.sqrt(len(d)) if len(d) > 1 else np.nan,
+                     'live accuracy': ((g['MODEL_HOME_PROB'] > 0.5) == g['y']).mean(),
+                     'frozen accuracy': ((g['FROZEN_HOME_PROB'] > 0.5) == g['y']).mean()})
+    return pd.DataFrame(rows)
+
+
+def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_path=TIP_PRICES_PATH):
+    """
+    All report tables (no file output): coverage, per-model strategy tables ('live' and, once the
+    model is frozen, 'frozen'), the live/frozen/market comparison, and which model the plan's
+    decision rules are judged on ('frozen' when it exists).
+    """
+    log = pl.load() if log is None else log
+    if log is None or log.empty:
+        return None
+    entry, coverage = entries(log, since)
+    margins, tips = results(games_path), tip_prices(tip_path)
+    models = {}
+    for m in ('live', 'frozen'):
+        view = model_view(entry, m)
+        if m == 'frozen' and view.empty:
+            continue
+        models[m] = strategy_tables(legs(view, margins, tips))
+    n_frozen = len(model_view(entry, 'frozen'))
+    coverage.update({'legs pending (unplayed)': int(models['live']['legs']['won'].isna().sum()),
+                     'frozen model': (f'logged for {n_frozen} games' if n_frozen
+                                      else 'not frozen yet (python src/frozen_model.py)'),
+                     'CLV source': 'Kalshi price at tip-off (data/tip_prices.csv); last pre-tip-off logged price '
+                     'where missing' if tips is not None
+                     else 'last pre-tip-off logged price (run: python src/market_odds.py --tip-prices)'})
+    return {'coverage': coverage, 'models': models, 'comparison': model_comparison(entry, margins),
+            'judged_on': 'frozen' if 'frozen' in models else 'live'}
 
 
 def _md(df, fmt):
@@ -323,11 +395,12 @@ def _md(df, fmt):
     return '\n'.join(lines)
 
 
-PCT = {'win rate', 'hit rate', 'PrizePicks SE', 'SE'}
+PCT = {'win rate', 'hit rate', 'PrizePicks SE', 'SE', 'live accuracy', 'frozen accuracy'}
 SIGNED_PCT = {'Kalshi return/$', 'PrizePicks return/$', 'return/$'}
 FORMATS = {'avg price': '{:.3f}', 'avg multiplier': '{:.2f}x', 'Kalshi c/contract': '{:+.1f}',
            'CLV c (mean)': '{:+.1f}', 'Kalshi SE': '{:.1f}', 'CLV SE': '{:.1f}', '$100 end': '${:.0f}',
-           'max drawdown $': '${:.0f}', 't': '{:+.2f}'}
+           'max drawdown $': '${:.0f}', 't': '{:+.2f}', 'live log loss': '{:.4f}', 'frozen log loss': '{:.4f}',
+           'market log loss': '{:.4f}', 'live - frozen': '{:+.4f}', 'diff SE': '{:.4f}'}
 
 
 def _fmt(col, v):
@@ -348,23 +421,28 @@ def report(tables, since=SEASON_START):
     """Markdown text of the report."""
     if tables is None:
         return '# Paper-trade report\n\nNo prediction log yet. Hypothetical analysis, not betting advice.\n'
-    cov = tables['coverage']
+    judged = tables['judged_on']
     lines = ['# Paper-trade report, 2026-27 (local only: uses Kalshi prices)', '',
              'Hypothetical analysis, not betting advice. Paper trading only; no orders are placed.', '',
              f'Rules: docs/paper_trading_plan.md. Games from {since}; entry = last prediction logged '
              f'{ENTRY_MINUTES}+ minutes before tip-off. PrizePicks prices are reverse-engineered estimates.', '',
              '## Coverage', '']
-    lines += [f'- {k}: {v}' for k, v in cov.items()]
-    lines += ['', '## Decision status (rules written before the season)', '']
-    lines += [f'- **{k}** {LABELS[k]}: {v}' for k, v in tables['status'].items()]
-    lines += ['', '## Single bets', '',
-              'Kalshi: $1-payout contract at the ask plus fee (cents per contract, and return per $ staked). '
-              'PrizePicks: return per $1 on a single pick. Bankroll: $100, flat $1 per bet (Kalshi prices).', '',
-              _md(tables['singles'], _fmt), '',
-              '## Lineups (PrizePicks pricing, one per day from the first k legs by tip-off)', '',
-              _md(tables['lineups'], _fmt), '',
-              '## Closing line value (cents per leg; positive = the market moved toward our side before tip-off)', '',
-              _md(tables['clv'], _fmt), '']
+    lines += [f'- {k}: {v}' for k, v in tables['coverage'].items()]
+    lines += ['', f'## Decision status (rules written before the season; judged on the {judged} model)', '']
+    lines += [f'- **{k}** {LABELS[k]}: {v}' for k, v in tables['models'][judged]['status'].items()]
+    comp = tables['comparison']
+    lines += ['', '## Live vs frozen model vs market (same finished games; lower log loss is better)', '',
+              _md(comp, _fmt) if len(comp) else 'No finished games with both models logged yet.', '']
+    for m, t in tables['models'].items():
+        name = m.capitalize()
+        lines += [f'## {name} model: single bets', '',
+                  'Kalshi: $1-payout contract at the ask plus fee (cents per contract, and return per $ staked). '
+                  'PrizePicks: return per $1 on a single pick. Bankroll: $100, flat $1 per bet (Kalshi prices).', '',
+                  _md(t['singles'], _fmt), '',
+                  f'## {name} model: lineups (PrizePicks pricing, one per day from the first k legs by tip-off)', '',
+                  _md(t['lineups'], _fmt), '',
+                  f'## {name} model: closing line value (cents per leg; positive = the market moved toward our '
+                  'side before tip-off)', '', _md(t['clv'], _fmt), '']
     return '\n'.join(lines)
 
 

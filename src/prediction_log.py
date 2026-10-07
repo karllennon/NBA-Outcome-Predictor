@@ -9,7 +9,8 @@ are in. Rows are only ever appended; earlier rows are never rewritten.
         MODEL_HOME_MARGIN, SPREAD (home line, betting convention), SPREAD_SIGMA,
         MARKET_SPREAD (market home line),
         decision columns for the moneyline (ML_*) and spread (SPREAD_*) markets: a hypothetical
-        $1 paper trade whenever the decision is a lean (never a real order)
+        $1 paper trade whenever the decision is a lean (never a real order),
+        the model's pick (PICK_*), and the frozen model's version of the same (FROZEN_*)
 
 When LOG_COLUMNS changes, new rows start a new segment file (prediction_log.<timestamp>.csv)
 instead of rewriting the old file to add columns; load() reads all segments together. The log
@@ -36,7 +37,13 @@ LOG_COLUMNS = ['LOGGED_AT_UTC', 'GAME_ID', 'GAME_DATE', 'TIP_TIME_ET', 'HOME_TEA
                'SPREAD_DECISION', 'SPREAD_SIDE', 'SPREAD_FAV', 'SPREAD_STRIKE', 'SPREAD_P', 'SPREAD_MID',
                'SPREAD_FILL', 'SPREAD_EDGE_PTS', 'SPREAD_EV',
                # 'pick the winner': a $1 paper trade on the model's favorite in every priced game
-               'PICK_TEAM', 'PICK_SIDE', 'PICK_P', 'PICK_MID', 'PICK_FILL', 'PICK_MARKET_UNDERDOG']
+               'PICK_TEAM', 'PICK_SIDE', 'PICK_P', 'PICK_MID', 'PICK_FILL', 'PICK_MARKET_UNDERDOG',
+               # the frozen model (frozen_model.py) on the same inputs and prices: its probability,
+               # margin, pick and spread decision; blank before the freeze
+               'FROZEN_MODEL_VERSION', 'FROZEN_HOME_PROB', 'FROZEN_HOME_MARGIN',
+               'FROZEN_PICK_TEAM', 'FROZEN_PICK_SIDE', 'FROZEN_PICK_P', 'FROZEN_PICK_MID', 'FROZEN_PICK_FILL',
+               'FROZEN_PICK_MARKET_UNDERDOG', 'FROZEN_SPREAD_SIDE', 'FROZEN_SPREAD_P', 'FROZEN_SPREAD_MID',
+               'FROZEN_SPREAD_FILL', 'FROZEN_SPREAD_EDGE_PTS']
 
 
 def model_version(path='models/nba_model.joblib'):

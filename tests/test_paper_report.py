@@ -88,7 +88,8 @@ def test_unplayed_games_are_pending_not_losses(tmp_path):
     log = pd.DataFrame([_log_row('0022600001', '2026-10-21 19:00', 60, 0.55, 0.44, 0.46, dog=True)])
     tables = R.build(log, _games(tmp_path, {}), since='2026-10-20', tip_path=str(tmp_path / 'none.csv'))
     assert tables['coverage']['legs pending (unplayed)'] > 0
-    assert tables['singles'].set_index('id').loc['S1', 'bets'] == 0
+    assert tables['models']['live']['singles'].set_index('id').loc['S1', 'bets'] == 0
+    assert tables['judged_on'] == 'live'           # nothing frozen yet
 
 
 def test_decision_rules_follow_the_plan():
