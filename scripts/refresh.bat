@@ -17,6 +17,8 @@ REM Archive the latest injury report and today's Kalshi prices (non-fatal: offse
 "%PY%" -u src\injury_reports.py || echo [!] injury report fetch failed
 REM Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)
 "%PY%" -u src\daily_slate.py || echo [!] slate / prediction log failed
+REM Paper-trade report from the log and last night's results (local, git-ignored)
+"%PY%" -u src\paper_report.py > nul || echo [!] paper-trade report failed
 echo === Refresh finished %DATE% %TIME% ===
 exit /b 0
 

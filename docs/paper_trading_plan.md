@@ -125,9 +125,11 @@ Building a lineup to read its payout does not require submitting it.
   can be computed from the existing columns (S5/S6 from `PICK_P`, `PICK_MID` and `PICK_FILL`, with
   tip-off order from `TIP_TIME_ET`); no new log columns are needed.
 - Done: `scripts/slate.bat` / `slate.sh` (injury report + slate only, for repeated runs).
-- To add (needs approval before any code): a report that applies the rules above to the log (all three venues, lineups, CLV,
-  bankroll curve), and a nightly backfill of the tip-off price for each logged game using the
-  existing Kalshi history code. Outputs stay local and git-ignored.
+- Done: `src/paper_report.py` applies these rules to the log and writes the git-ignored
+  `data/paper_report.md`; the morning refresh rebuilds it. CLV uses the last pre-tip-off logged
+  price until the tip-off price backfill exists.
+- To add (needs approval before any code): a nightly backfill of the tip-off price for each
+  logged game using the existing Kalshi history code. Outputs stay local and git-ignored.
 - For the frozen model: save a copy of the model on 2026-10-19 and log its probabilities next to
   the live model's (new columns, e.g. `FROZEN_HOME_PROB`, `FROZEN_MODEL_VERSION`; a new log
   segment, earlier rows untouched).

@@ -32,6 +32,9 @@ data/test_spread_predictions.csv
 data/spread_metrics.csv
 data/spread_disagreement.csv
 data/market_report.md
+data/paper_report.md
+data/tip_prices.csv
+data/prizepicks_checks.csv
 
 # Scheduled run logs (local)
 logs/
