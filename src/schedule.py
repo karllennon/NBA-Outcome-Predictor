@@ -2,10 +2,28 @@
 Games on a date from stats.nba.com's scoreboard (ScoreboardV2), with tip-off times and status.
 """
 import re
+import time
 from datetime import date
 import pandas as pd
 
 STATUS = {1: 'scheduled', 2: 'live', 3: 'final'}
+RETRIES = 3            # stats.nba.com sometimes returns an error page instead of JSON for a few minutes
+RETRY_DELAY = 10       # seconds before the 2nd attempt, doubling after that
+
+
+def _game_header(date_str, retries=RETRIES, delay=RETRY_DELAY, sleep=time.sleep):
+    """ScoreboardV2 game header for a date, retrying failed or non-JSON responses."""
+    import requests
+    from nba_api.stats.endpoints import scoreboardv2
+    for attempt in range(retries):
+        try:
+            return scoreboardv2.ScoreboardV2(game_date=date_str, timeout=30).game_header.get_data_frame()
+        except (ValueError, requests.RequestException) as e:     # JSONDecodeError is a ValueError
+            if attempt == retries - 1:
+                raise
+            wait = delay * 2 ** attempt
+            print(f"[!] NBA scoreboard attempt {attempt + 1} failed ({type(e).__name__}); retrying in {wait}s")
+            sleep(wait)
 
 
 def parse_status_tip(game_date, status_text):
@@ -23,14 +41,12 @@ def games_on(game_date=None, team_names=None):
     team_names: {TEAM_ID: name}; defaults to nba_api's static list with the box-score spelling
     'LA Clippers'.
     """
-    from nba_api.stats.endpoints import scoreboardv2
     game_date = pd.Timestamp(game_date or date.today()).normalize()
     if team_names is None:
         from nba_api.stats.static import teams
         team_names = {t['id']: t['full_name'] for t in teams.get_teams()}
         team_names = {k: ('LA Clippers' if v == 'Los Angeles Clippers' else v) for k, v in team_names.items()}
-    header = scoreboardv2.ScoreboardV2(game_date=game_date.strftime('%Y-%m-%d'), timeout=30).game_header.get_data_frame()
-    header = header.drop_duplicates('GAME_ID')
+    header = _game_header(game_date.strftime('%Y-%m-%d')).drop_duplicates('GAME_ID')
     return pd.DataFrame({
         'GAME_ID': header['GAME_ID'],
         'GAME_DATE': game_date,
