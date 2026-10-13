@@ -34,3 +34,55 @@ def test_scoreboard_gives_up_after_the_last_attempt(monkeypatch):
     with pytest.raises(ValueError):
         schedule._game_header('2026-10-21', sleep=lambda s: None)
     assert calls['n'] == schedule.RETRIES
+
+
+def _header(status_ids, texts):
+    return pd.DataFrame({'GAME_ID': ['0022600001', '0022600002'], 'HOME_TEAM_ID': [1, 2],
+                         'VISITOR_TEAM_ID': [3, 4], 'GAME_STATUS_ID': status_ids, 'GAME_STATUS_TEXT': texts})
+
+
+TEAMS = {1: 'Charlotte Hornets', 2: 'Boston Celtics', 3: 'Brooklyn Nets', 4: 'Miami Heat'}
+
+
+def test_scoreboard_outage_falls_back_to_the_cached_schedule(monkeypatch, tmp_path):
+    cache = str(tmp_path / 'cache')
+    monkeypatch.setattr(schedule, '_game_header',
+                        lambda d: _header([1, 1], ['7:00 pm ET', '7:30 pm ET']))
+    fresh = schedule.games_on('2026-10-21', TEAMS, cache_dir=cache)
+    assert list(fresh['STATUS']) == ['scheduled', 'scheduled']
+
+    def down(d):
+        raise ValueError('error page')
+    monkeypatch.setattr(schedule, '_game_header', down)
+    # 7:15 PM: the 7:00 game has started, the 7:30 game has not
+    cached = schedule.games_on('2026-10-21', TEAMS, cache_dir=cache, now='2026-10-21 19:15')
+    assert list(cached['GAME_ID']) == ['0022600001', '0022600002']
+    assert list(cached['STATUS']) == ['unknown', 'scheduled']
+    assert cached['TIP_TIME_ET'].iloc[1] == pd.Timestamp('2026-10-21 19:30')
+    with pytest.raises(ValueError):                       # no cache for another date
+        schedule.games_on('2026-10-22', TEAMS, cache_dir=cache)
+
+
+def test_cache_keeps_tip_times_after_games_start(monkeypatch, tmp_path):
+    cache = str(tmp_path / 'cache')
+    monkeypatch.setattr(schedule, '_game_header', lambda d: _header([1, 1], ['7:00 pm ET', '7:30 pm ET']))
+    schedule.games_on('2026-10-21', TEAMS, cache_dir=cache)
+    # later fetch: game 1 under way, so the scoreboard shows 'Q2 5:12' instead of a tip time
+    monkeypatch.setattr(schedule, '_game_header', lambda d: _header([2, 1], ['Q2 5:12', '7:30 pm ET']))
+    schedule.games_on('2026-10-21', TEAMS, cache_dir=cache)
+    saved = schedule._read_cache('2026-10-21', cache)
+    assert saved['TIP_TIME_ET'].iloc[0] == pd.Timestamp('2026-10-21 19:00')
+
+
+def test_prefetch_reports_a_failed_date_and_never_caches_stale_data(monkeypatch, tmp_path):
+    cache = str(tmp_path / 'cache')
+    monkeypatch.setattr(schedule, '_game_header', lambda d: _header([1, 1], ['7:00 pm ET', '7:30 pm ET']))
+    import nba_api.stats.static.teams as t
+    monkeypatch.setattr(t, 'get_teams', lambda: [{'id': k, 'full_name': v} for k, v in TEAMS.items()])
+    assert schedule.prefetch(1, start='2026-10-21', cache_dir=cache) == {'2026-10-21': 2}
+
+    def down(d):
+        raise ValueError('error page')
+    monkeypatch.setattr(schedule, '_game_header', down)
+    # the cache exists, but a prefetch must report the outage rather than return the cached copy
+    assert schedule.prefetch(1, start='2026-10-21', cache_dir=cache) == {'2026-10-21': 'failed (ValueError)'}

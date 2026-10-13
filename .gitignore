@@ -36,6 +36,8 @@ data/market_report.md
 data/paper_report.md
 data/tip_prices.csv
 data/prizepicks_checks.csv
+# Cached NBA schedules (fallback when stats.nba.com is down; local)
+data/schedule_cache/
 
 # Scheduled run logs (local)
 logs/
