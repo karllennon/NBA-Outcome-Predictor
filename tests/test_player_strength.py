@@ -54,3 +54,25 @@ def test_values_use_only_earlier_games():
     model = ps.PlayerStrength(box, games, injury_model=None, half_life=1e9, prior_minutes=0, replacement=0.5)
     value, minutes, team = model.player('P', days[2])        # the 90-point game is not seen yet
     assert value == pytest.approx(1.0) and team == 'A'
+
+
+def test_player_back_from_a_season_long_absence_counts_at_the_opener():
+    class Reports:            # stand-in for InjuryModel: reports keyed by (team, date)
+        def __init__(self, reports):
+            self.reports = reports
+
+        def report_out(self, team, date):
+            return {}         # nobody listed Out on opening night
+
+    last_season = pd.date_range('2025-02-01', periods=15, freq='3D')   # he played only the first
+    box = _box([('Star', 'A', last_season[0], 36, 36)] +
+               [('Role', 'A', d, 30, 12) for d in last_season])
+    games = pd.DataFrame({'TEAM_NAME': ['A'] * 15, 'GAME_DATE': last_season})
+    finale = last_season[-1]
+    reports = {('A', finale): pd.DataFrame({'BOX_NAME': ['Star'], 'STATUS': ['Out']})}
+    opener = pd.Timestamp('2025-10-21')
+    with_report = ps.PlayerStrength(box, games, injury_model=Reports(reports), half_life=1e9, prior_minutes=0,
+                                    replacement=0.5)
+    assert 'Star' in with_report.candidates('A', opener)       # on the report for the previous game
+    without = ps.PlayerStrength(box, games, injury_model=Reports({}), half_life=1e9, prior_minutes=0, replacement=0.5)
+    assert 'Star' not in without.candidates('A', opener)       # no evidence he is still on the team

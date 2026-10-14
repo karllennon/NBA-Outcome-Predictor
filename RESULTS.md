@@ -568,3 +568,21 @@ minutes (about a season of a starter's minutes) are `player_strength.PARAMS`. Th
 compresses differences between players (Denver on 2026-02-01: 155.3, or 148.6 without Jokic); the
 model's weight on the feature rescales it. Late-season contenders that rest starters (e.g. Oklahoma
 City with eight players listed Out on 2026-04-10) drop accordingly.
+
+Two changes before any test, prompted by Tyrese Haliburton (out all of 2025-26, back for 2026-27):
+- **Availability:** a player on the team's injury report for its previous game now counts as a
+  candidate even if that game was months ago, so a player returning from a season-long absence is
+  included at the season opener (a test covers it). Before, the offseason meant no recent games
+  or reports, and he was left out.
+- **How old games fade:** calendar decay rates a player who has not played for a long time close to
+  replacement level. Two alternatives were tuned the same way, on games before 2026-10-20:
+
+| Decay of a player's past games | Best setting | Mean squared error |
+|---|---|---|
+| **Calendar days (kept)** | 120 days, 3,000 minutes | **215.50** |
+| Calendar days, each break between his games capped at 30 days | 120 days, 10,000 minutes | 216.65 |
+| His own games played | 80 games, 3,000 minutes | 218.42 |
+
+  Calendar decay fits the typical game best (it also reflects aging and changing roles), so it
+  stays; the cost is that a star back from a season-long absence starts near replacement value
+  until he plays again. The dashboard's Predictor page has a what-if view for that case.

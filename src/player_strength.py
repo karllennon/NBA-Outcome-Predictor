@@ -4,13 +4,19 @@ held-out games have been used for nine experiments already (RESULTS.md).
 
 A team's strength for a game is built from the players expected to play:
 
-    value(player)   box-score impact per minute (injuries.impact_score / MIN), recent games
-                    weighted more (weight halves every `half_life` days) and shrunk toward a
-                    replacement-level value by `prior_minutes` minutes of replacement play
+    value(player)   box-score impact per minute (injuries.impact_score / MIN), his recent games
+                    weighted more and shrunk toward a replacement-level value by `prior_minutes`
+                    minutes of replacement play. `decay` sets what "recent" means: 'days' (weight
+                    halves every `half_life` calendar days), 'games' (every `half_life` of his own
+                    games), or 'capped' (calendar days, but no single break between his games
+                    counts for more than GAP_CAP_DAYS, so a season-long injury or the offseason
+                    fades his value like one quiet month instead of erasing it)
     minutes(player) his average minutes over his last MINUTES_GAMES appearances
     available       candidates for the team (latest team is this one, and he either played in
-                    one of its last RECENT_TEAM_GAMES games or appeared on its injury report in
-                    the last REPORT_LOOKBACK_DAYS days) minus players listed Out on the last
+                    one of its last RECENT_TEAM_GAMES games, appeared on its injury report in the
+                    last REPORT_LOOKBACK_DAYS days, or was on its report for its previous game even
+                    if that was months ago: a player back from a season-long absence at the
+                    season opener) minus players listed Out on the last
                     report before tip-off (without a report: minus players who missed the
                     team's previous game, the same fallback as the injury feature)
     strength        sum over available players of value x minutes, the 240 minutes of a game
@@ -26,7 +32,8 @@ import pandas as pd
 
 from injuries import impact_score
 
-PARAMS = {'half_life': 120, 'prior_minutes': 3000}  # tune_params on games before 2026-10-20 (RESULTS.md)
+PARAMS = {'half_life': 120, 'prior_minutes': 3000, 'decay': 'days'}  # tune_params, games before 2026-10-20
+GAP_CAP_DAYS = 30
 REPLACEMENT_QUANTILE = 0.2      # replacement level: 20th percentile of per-minute value (300+ minutes)
 MINUTES_GAMES = 10
 RECENT_TEAM_GAMES = 10
@@ -56,9 +63,10 @@ def allocate_minutes(usual, total=TEAM_MINUTES):
 
 class PlayerStrength:
     def __init__(self, player_boxscores, team_games, injury_model=None, half_life=None, prior_minutes=None,
-                 replacement=None):
+                 replacement=None, decay=None):
         self.half_life = PARAMS['half_life'] if half_life is None else half_life
         self.prior_minutes = PARAMS['prior_minutes'] if prior_minutes is None else prior_minutes
+        self.decay = PARAMS['decay'] if decay is None else decay
         p = player_boxscores.copy()
         p['GAME_DATE'] = pd.to_datetime(p['GAME_DATE'])
         p = p[p['MIN'] > 0].sort_values('GAME_DATE')
@@ -89,19 +97,39 @@ class PlayerStrength:
         n = np.searchsorted(dates, np.datetime64(pd.Timestamp(as_of)))
         if n == 0:
             return None
-        days = (np.datetime64(pd.Timestamp(as_of)) - dates[:n]) / np.timedelta64(1, 'D')
-        w = 0.5 ** (days / self.half_life)
+        w = 0.5 ** (self._age(dates[:n], as_of) / self.half_life)
         value = (np.sum(w * impact[:n]) + self.prior_minutes * self.replacement) / (np.sum(w * minutes[:n]) + self.prior_minutes)
         return value, float(minutes[max(0, n - MINUTES_GAMES):n].mean()), teams[n - 1]
 
+    def _age(self, dates, as_of):
+        """How old each of a player's games is, in the units of `decay` (days or games)."""
+        if self.decay == 'games':
+            return np.arange(len(dates) - 1, -1, -1).astype(float)
+        days_since = (np.datetime64(pd.Timestamp(as_of)) - dates) / np.timedelta64(1, 'D')
+        if self.decay == 'days':
+            return days_since
+        # 'capped': sum the breaks after each game, each break counting at most GAP_CAP_DAYS
+        gaps = np.diff(np.append(dates, np.datetime64(pd.Timestamp(as_of)))) / np.timedelta64(1, 'D')
+        capped = np.minimum(gaps, GAP_CAP_DAYS)
+        return np.cumsum(capped[::-1])[::-1]
+
     def _reported(self, team_name, as_of):
-        """Players on any archived report for the team in the last REPORT_LOOKBACK_DAYS days."""
+        """
+        Players on any archived report for the team in the last REPORT_LOOKBACK_DAYS days, or on
+        its report for its previous game however long ago (e.g. last season's finale).
+        """
         if self.injuries is None or self.injuries.reports is None:
             return set()
         names = set()
         day = pd.Timestamp(as_of).normalize()
-        for k in range(1, REPORT_LOOKBACK_DAYS + 1):
-            rows = self.injuries.reports.get((team_name, day - pd.Timedelta(days=k)))
+        days = [day - pd.Timedelta(days=k) for k in range(1, REPORT_LOOKBACK_DAYS + 1)]
+        dates = self.team_dates.get(team_name)
+        if dates is not None:
+            before = dates[dates < np.datetime64(day)]
+            if len(before):
+                days.append(pd.Timestamp(before[-1]))
+        for d in days:
+            rows = self.injuries.reports.get((team_name, d))
             if rows is not None:
                 names |= set(rows['BOX_NAME'].dropna())
         return names
@@ -162,7 +190,7 @@ class PlayerStrength:
 
 
 def tune_params(player_boxscores, team_games, injury_model, before=FIRST_TEST_DATE,
-                half_lives=(60, 120, 240), prior_minutes=(100, 300, 1000, 3000, 10000), burn_in_days=60):
+                half_lives=(60, 120, 240), prior_minutes=(1000, 3000, 10000), burn_in_days=60, decay='days'):
     """
     Settings whose PLAYER_STRENGTH difference best predicts home margins (least squares with home
     court) on games before `before` only. Returns (best params, {params: mean squared error}).
@@ -175,11 +203,11 @@ def tune_params(player_boxscores, team_games, injury_model, before=FIRST_TEST_DA
     scores = {}
     for h in half_lives:
         for k in prior_minutes:
-            ps = PlayerStrength(player_boxscores, team_games, injury_model, half_life=h, prior_minutes=k)
+            ps = PlayerStrength(player_boxscores, team_games, injury_model, half_life=h, prior_minutes=k, decay=decay)
             diff = np.array([ps.team_strength(names[r.HOME_ID], r.GAME_DATE)[0] - ps.team_strength(names[r.AWAY_ID], r.GAME_DATE)[0]
                              for r in games.itertuples()])
             X = np.column_stack([np.ones(len(diff)), diff])
             coef, *_ = np.linalg.lstsq(X, games['MARGIN'].values, rcond=None)
             scores[(h, k)] = float(np.mean((X @ coef - games['MARGIN'].values) ** 2))
     best = min(scores, key=scores.get)
-    return {'half_life': best[0], 'prior_minutes': best[1]}, scores
+    return {'half_life': best[0], 'prior_minutes': best[1], 'decay': decay}, scores
