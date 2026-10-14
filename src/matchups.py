@@ -63,6 +63,9 @@ def create_matchup_data(processed_df):
         matchups['DARKO_INJURY_DIFF'] = injury_diff(matchups['DARKO_INJURY_LOSS_HOME'],
                                                     matchups['DARKO_INJURY_LOSS_AWAY'])
         extra.append('DARKO_INJURY_DIFF')
+    if 'RETURN_GAIN_HOME' in matchups:          # 2026-27 experiment: players back from injury
+        matchups['RETURN_DIFF'] = (matchups['RETURN_GAIN_HOME'] - matchups['RETURN_GAIN_AWAY']) / 10
+        extra.append('RETURN_DIFF')
     if 'AT_ALTITUDE_AWAY' in matchups:
         matchups['AWAY_AT_ALTITUDE'] = matchups['AT_ALTITUDE_AWAY']
         extra.append('AWAY_AT_ALTITUDE')
