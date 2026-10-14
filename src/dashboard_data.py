@@ -26,7 +26,7 @@ FEATURE_LABELS = {
     'WIN_STREAK_DIFF': 'Wins in last 5', 'REST_DIFF': 'Rest days', 'B2B_DIFF': 'Back-to-back',
     'TRAVEL_DIFF': 'Travel distance', 'TZ_SHIFT_DIFF': 'Time zones crossed', 'EFG_DIFF': 'Shooting (eFG%)',
     'TOV_PCT_DIFF': 'Turnovers', 'ORB_PCT_DIFF': 'Offensive rebounding', 'FT_RATE_DIFF': 'Free-throw rate',
-    'PACE_DIFF': 'Pace', 'DEF_RATING_DIFF': 'Defense (pts allowed /100)',
+    'PACE_DIFF': 'Pace', 'DEF_RATING_DIFF': 'Defense (pts allowed /100)', 'RATING_DIFF': 'Power rating',
 }
 
 
@@ -38,8 +38,11 @@ def team_abbrs(games_path='data/raw_nba_data.csv'):
 def contributions(model, features):
     """
     Log-odds contribution of each feature to the home team's chance (logistic model):
-    coefficient x standardized value. Positive favors the home team.
+    coefficient x standardized value. Positive favors the home team. None if the feature row
+    lacks a current feature (rows logged before that feature was added).
     """
+    if any(f not in features for f in FEATURES):
+        return None
     scaler, logit = model[0], model[-1]
     x = pd.Series(features)[FEATURES].astype(float).values
     z = (x - scaler.mean_) / scaler.scale_
