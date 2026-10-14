@@ -9,6 +9,7 @@ same held-out games against the Elo-only baseline and the current shipped config
 Results are printed as a table; RESULTS.md records them with commentary.
 """
 import argparse
+import numpy as np
 import pandas as pd
 import data_pipeline
 from data_pipeline import load_raw, load_injury_reports, build_dataset
@@ -196,6 +197,90 @@ def margin_model(sigma_holdout=0.2):
 
     fit_predict.sigmas = []
     return fit_predict
+
+
+C_GRID = (0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
+
+
+def _logistic(c):
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    return make_pipeline(StandardScaler(), LogisticRegression(C=c, max_iter=2000))
+
+
+def _split_recent(train, holdout=0.2):
+    """Earlier and most recent parts of a fold's training games (games sorted by date)."""
+    train = train.sort_values(['GAME_DATE', 'GAME_ID'])
+    cut = int(len(train) * (1 - holdout))
+    return train.iloc[:cut], train.iloc[cut:]
+
+
+def tuned_c(grid=C_GRID, holdout=0.2):
+    """
+    Logistic regression whose C is chosen inside each fold: fit on the earlier 80% of the fold's
+    training games for every C, keep the C with the lowest log loss on the most recent 20%, then
+    refit on all training games. Test games are never used.
+    """
+    from sklearn.metrics import log_loss
+
+    def fit_predict(train, test):
+        early, recent = _split_recent(train, holdout)
+        scores = {c: log_loss(recent['TARGET'], _logistic(c).fit(early[FEATURES], early['TARGET'])
+                              .predict_proba(recent[FEATURES])[:, 1]) for c in grid}
+        best = min(scores, key=scores.get)
+        fit_predict.chosen.append((test['GAME_DATE'].min().date(), best))
+        return _logistic(best).fit(train[FEATURES], train['TARGET']).predict_proba(test[FEATURES])[:, 1]
+
+    fit_predict.chosen = []
+    return fit_predict
+
+
+def platt_scaled(holdout=0.2):
+    """
+    Shipped logistic regression plus a recalibration fitted inside each fold: a one-feature
+    logistic fit of the outcome on the model's log-odds for the most recent 20% of training
+    games (model fit on the earlier 80%); the slope says whether predictions should be more
+    (>1) or less (<1) extreme. Applied to the model refit on all training games.
+    """
+    from sklearn.linear_model import LogisticRegression
+
+    def logit(p):
+        p = np.clip(p, 1e-6, 1 - 1e-6)
+        return np.log(p / (1 - p)).reshape(-1, 1)
+
+    def fit_predict(train, test):
+        early, recent = _split_recent(train, holdout)
+        p_recent = make_logistic().fit(early[FEATURES], early['TARGET']).predict_proba(recent[FEATURES])[:, 1]
+        cal = LogisticRegression(C=1e6).fit(logit(p_recent), recent['TARGET'])
+        fit_predict.slopes.append((test['GAME_DATE'].min().date(), float(cal.coef_[0][0]), float(cal.intercept_[0])))
+        p_test = make_logistic().fit(train[FEATURES], train['TARGET']).predict_proba(test[FEATURES])[:, 1]
+        return cal.predict_proba(logit(p_test))[:, 1]
+
+    fit_predict.slopes = []
+    return fit_predict
+
+
+@experiment
+def regularization():
+    """
+    Is the shipped C = 0.1 (never tuned) too strong? Fixed C values for reference, C tuned
+    inside each fold on training games only, and a recalibration fitted on training games.
+    """
+    base = shipped_dataset()
+    tuned, platt = tuned_c(), platt_scaled()
+    variants = {'Shipped: logistic, C = 0.1': base}
+    for c in C_GRID:
+        if c != 0.1:
+            variants[f'C = {c:g} (fixed, for reference)'] = (base, lambda tr, te, c=c: _logistic(c).fit(
+                tr[FEATURES], tr['TARGET']).predict_proba(te[FEATURES])[:, 1])
+    variants['C tuned per fold (training games only)'] = (base, tuned)
+    variants['C = 0.1 + recalibration fitted per fold'] = (base, platt)
+    results = compare(variants, 'Regularization strength')
+    print(f"  C chosen per fold: {tuned.chosen}")
+    print(f"  recalibration per fold (fold start, slope, intercept): "
+          f"{[(d, round(s, 3), round(i, 3)) for d, s, i in platt.slopes]}")
+    return results
 
 
 @experiment
