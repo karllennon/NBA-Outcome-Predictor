@@ -5,6 +5,7 @@ computed the same way as the training features.
 """
 from datetime import date
 import joblib
+import numpy as np
 import pandas as pd
 from context import add_context, upcoming_rows
 from data_pipeline import INJURY_PARAMS, ELO_PARAMS, load_raw
@@ -60,6 +61,55 @@ class GamePredictor:
             self._ratings[day] = power_rating.ratings_as_of(self.power_games, day, **power_rating.PARAMS)[0]
         r = self._ratings[day]
         return r.get(self.team_ids.get(home_team), 0.0) - r.get(self.team_ids.get(away_team), 0.0)
+
+    def long_absent(self, team_name, game_date=None, min_impact=10.0, max_days_away=600):
+        """
+        Players the model leaves out of the team entirely because they have missed more than
+        CHRONIC_MAX games in a row (e.g. a season-long injury), whose latest team is this one:
+        DataFrame PLAYER_NAME, impact_score (his last 15 games), games_missed, last_game. Only for
+        the dashboard's what-if view; the model itself never uses this list.
+        """
+        from injuries import CHRONIC_MAX, RECENT_GAMES
+        as_of = np.datetime64(pd.Timestamp(game_date or date.today()))
+        dates = self.injuries.team_dates.get(team_name)
+        rows = []
+        if dates is not None:
+            before = dates[dates < as_of][::-1]
+            for player in self.injuries.team_players.get(team_name, []):
+                p_dates, p_teams, p_impact = self.injuries.player_logs[player]
+                n = np.searchsorted(p_dates, as_of)
+                if n == 0 or p_teams[n - 1] != team_name:
+                    continue
+                last = p_dates[n - 1]
+                if (as_of - last) / np.timedelta64(1, 'D') > max_days_away:
+                    continue
+                missed = int(np.sum(before > last))
+                impact = float(p_impact[max(0, n - RECENT_GAMES):n].mean())
+                if missed > CHRONIC_MAX and impact >= min_impact:
+                    rows.append((player, impact, missed, pd.Timestamp(last).date()))
+        out = pd.DataFrame(rows, columns=['PLAYER_NAME', 'impact_score', 'games_missed', 'last_game'])
+        return out.sort_values('impact_score', ascending=False).reset_index(drop=True)
+
+    def what_if_returning(self, result, home_back=(), away_back=(), game_date=None, home_team=None,
+                          away_team=None):
+        """
+        What the model would say if players it leaves out (long_absent) were credited as back:
+        each one's impact counted like the reverse of an absence in CORE_INJURY_DIFF. Returns
+        {'home_prob', 'home_margin', 'credit'}. A what-if for reading only: never logged and not
+        the model's prediction.
+        """
+        impact = {}
+        for team in (home_team, away_team):
+            if team is not None:
+                la = self.long_absent(team, game_date)
+                impact.update(dict(zip(la['PLAYER_NAME'], la['impact_score'])))
+        home_credit = sum(impact.get(p, 0.0) for p in home_back)
+        away_credit = sum(impact.get(p, 0.0) for p in away_back)
+        f = result['features'].copy()
+        f['CORE_INJURY_DIFF'] = f['CORE_INJURY_DIFF'] + injury_diff(-home_credit, -away_credit)
+        margin = float(self.spread.predict(f)[0]) if self.spread is not None else None
+        return {'home_prob': float(self.model.predict_proba(f)[0][1]), 'home_margin': margin,
+                'credit': (home_credit, away_credit)}
 
     def load_injury_report(self, fetch=True):
         """Latest official injury report (downloaded and archived, or the newest archived one)."""

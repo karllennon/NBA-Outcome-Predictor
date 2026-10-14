@@ -202,7 +202,9 @@ the fetch fails, or when no new games arrive between November and March.
     probability a model trained only on earlier games gave, Kalshi's price at tip-off, the injury
     report, and the result. Useful in the offseason and for seeing how the model and market differ.
 - **Markets**: model vs Kalshi on every held-out game, and how the two did when they disagreed.
-- **Predictor**: any matchup today, with players listed Out pre-checked and adjustable.
+- **Predictor**: any matchup today, with players listed Out pre-checked and adjustable. A what-if
+  section lists players the model leaves out after 21+ missed games in a row (e.g. a season-long
+  injury); ticking one shows the prediction with him credited back, for reading only (never logged).
 - **Track Record**: accuracy, log loss and calibration of logged live predictions vs the market.
 - **Model**: walk-forward results, market comparison, calibration, ROC curve, feature weights.
 
