@@ -305,6 +305,42 @@ def returning_players():
 
 
 @experiment
+def power_ratings():
+    """
+    Opponent-adjusted power ratings (power_rating.py): RATING_DIFF = home minus away rating, from a
+    decayed ridge regression on earlier game margins. The half-life and penalty are chosen inside
+    each fold by margin error on its training games, like the Elo settings (every fold chose the
+    shipped power_rating.PARAMS). Kept (RESULTS.md); replacing ELO_DIFF is shown for reference.
+    """
+    import power_rating as PR
+    games = PR.pair_games(raw()[0])
+    tables = PR.rating_tables(games)
+    chosen = {}
+
+    def with_rating(cols):
+        def fit_predict(train, test):
+            start = test['GAME_DATE'].min()
+            if start not in chosen:
+                chosen[start] = PR.tune(tables, games, start)[0]
+            t = tables[chosen[start]]
+            diff = t['RATING_HOME'] - t['RATING_AWAY']
+            tr = train.assign(RATING_DIFF=train['GAME_ID'].map(diff))
+            te = test.assign(RATING_DIFF=test['GAME_ID'].map(diff))
+            return make_logistic().fit(tr[cols], tr['TARGET']).predict_proba(te[cols])[:, 1]
+        return fit_predict
+
+    base = shipped_dataset()
+    before = [f for f in FEATURES if f != 'RATING_DIFF']
+    no_elo = [f for f in FEATURES if f != 'ELO_DIFF']
+    results = compare({'Before: no power rating': (base, before),
+                       'Shipped: + power rating (RATING_DIFF, tuned per fold)': (base, with_rating(FEATURES)),
+                       'Power rating instead of Elo (reference)': (base, with_rating(no_elo))},
+                      'Power ratings')
+    print(f"  (half-life days, penalty) chosen per fold: {[(d.date(), k) for d, k in sorted(chosen.items())]}")
+    return results
+
+
+@experiment
 def margin_regression():
     base = shipped_dataset()
     margin = margin_model()

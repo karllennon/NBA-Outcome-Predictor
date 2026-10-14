@@ -474,3 +474,33 @@ Neither version helps, including the one limited to rotation-level players, whic
 seeing the first result. Elo and the rolling form appear to recover quickly enough once a player is
 back. The code stays, switched off by default (`returning=False`), so the shipped features are
 unchanged.
+
+### Power ratings (kept)
+
+`src/power_rating.py` fits every team's strength jointly from earlier game margins before each
+game day: home margin = home court + rating(home) - rating(away), by ridge regression with each
+game's weight halving every `half_life` days and a penalty `lam` shrinking ratings toward zero.
+Unlike Elo, each refit adjusts every team for the strength of all the opponents it played.
+RATING_DIFF = home minus away rating. The half-life (15, 30, 60, 120 days) and penalty (1, 5, 20)
+are chosen inside each fold by the rating's own margin error on that fold's training games, like
+the Elo settings; every fold chose 60 days and 5, which are the shipped `power_rating.PARAMS`, so
+the walk-forward results with the fixed settings are identical. On its own the rating predicts
+margins about as well as Elo (held-out MAE 11.35 vs 11.28). `python src/experiments.py power_ratings`:
+
+| Model | ROC-AUC | Accuracy | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 68.56% | 0.5947 | | |
+| Before: no power rating | 0.7579 | 70.43% | 0.5795 | | |
+| **+ RATING_DIFF (kept)** | **0.7629** | **70.66%** | **0.5763** | **-0.0032 (0.0015)** | **3/4** |
+| Power rating instead of Elo (reference) | 0.7636 | 71.06% | 0.5760 | -0.0036 (0.0019) | 3/4 |
+
+Kept: the largest gain since the injury reports, better in 3 of 4 folds. It is added rather than
+replacing Elo (the pre-specified variant; the two score about the same). The spread model uses the
+same features and improves too: held-out MAE 10.95 -> 10.91 points (-0.046, SE 0.025, 3 of 4
+folds better), still better than the Elo-only spread in all four folds. In the refit model the
+power rating has the largest weight (+0.64 per standard deviation; Elo +0.20, injuries +0.37).
+Live predictions compute the rating with `power_rating.ratings_as_of` on the same games, and a test
+checks that it equals the training value.
+
+Shipped model after this change, walk-forward on 1,762 held-out games: **ROC-AUC 0.7629, accuracy
+70.66%, log loss 0.5763, Brier 0.1966**; spread MAE 10.91 points.

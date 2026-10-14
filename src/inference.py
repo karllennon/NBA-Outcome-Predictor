@@ -11,6 +11,7 @@ from data_pipeline import INJURY_PARAMS, ELO_PARAMS, load_raw
 from elo import NBAEloCalculator
 from injuries import InjuryModel
 from matchups import FEATURES, injury_diff
+import power_rating
 
 OFFSEASON_GAP_DAYS = 90       # longer gap than this means a new season has started
 _ELO = NBAEloCalculator(**ELO_PARAMS)
@@ -34,6 +35,7 @@ class GamePredictor:
         team_games, players = load_raw(data_dir)
         players.columns = players.columns.str.strip()
         self.team_games = team_games
+        self._init_power_ratings(team_games)
         # Same settings as the training pipeline, so the injury feature means the same thing
         params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
         self.injuries = InjuryModel(players, team_games, **params)
@@ -43,6 +45,21 @@ class GamePredictor:
             self.trades = dict(zip(trades['PLAYER_NAME'], trades['NEW_TEAM']))
         except (FileNotFoundError, KeyError):
             self.trades = {}
+
+    def _init_power_ratings(self, team_games):
+        """Game pairs and team ids for the power rating (same games as training)."""
+        self.power_games = power_rating.pair_games(team_games)
+        latest = team_games.sort_values('GAME_DATE')
+        self.team_ids = dict(zip(latest['TEAM_NAME'], latest['TEAM_ID']))
+        self._ratings = {}
+
+    def power_rating_diff(self, home_team, away_team, game_date):
+        """RATING_DIFF for a game: home minus away power rating fitted on games before its date."""
+        day = pd.Timestamp(game_date).normalize()
+        if day not in self._ratings:
+            self._ratings[day] = power_rating.ratings_as_of(self.power_games, day, **power_rating.PARAMS)[0]
+        r = self._ratings[day]
+        return r.get(self.team_ids.get(home_team), 0.0) - r.get(self.team_ids.get(away_team), 0.0)
 
     def load_injury_report(self, fetch=True):
         """Latest official injury report (downloaded and archived, or the newest archived one)."""
@@ -158,6 +175,7 @@ class GamePredictor:
             'CORE_INJURY_DIFF': injury_diff(h_loss, a_loss),
             'TRAVEL_DIFF': h_ctx['TRAVEL_KM'] - a_ctx['TRAVEL_KM'],
             'TZ_SHIFT_DIFF': h_ctx['TZ_SHIFT'] - a_ctx['TZ_SHIFT'],
+            'RATING_DIFF': self.power_rating_diff(home_team, away_team, game_date),
         }])[FEATURES]
 
         stale_days = min(home['DAYS_SINCE_LAST_GAME'], away['DAYS_SINCE_LAST_GAME'])

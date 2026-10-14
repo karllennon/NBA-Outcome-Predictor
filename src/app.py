@@ -352,10 +352,11 @@ def markets_card(games_today, selected_id, mode):
 def drivers_card(g):
     with st.container(key="card-drivers"):
         ui.card_title('What drives the model', f"toward {g['HOME_ABBR']} (right) or {g['AWAY_ABBR']} (left)")
-        if not g.get('FEATURES'):
+        c = dd.contributions(load_model(), g['FEATURES']) if g.get('FEATURES') else None
+        if c is None:
             ui.html_block('<div class="cv-muted">No feature row for this game.</div>')
             return
-        c = dd.contributions(load_model(), g['FEATURES']).head(7).iloc[::-1]
+        c = c.head(7).iloc[::-1]
         pts = c['contribution'] * 25  # slope of the logistic curve at 50%: approx. win-probability points
         colors = [ui.HOME_SIDE if v >= 0 else ui.AWAY_SIDE for v in pts]
         fig = go.Figure(go.Bar(

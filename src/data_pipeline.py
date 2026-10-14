@@ -1,9 +1,11 @@
+import numpy as np
 import pandas as pd
 from context import add_context, CONTEXT_COLUMNS
 from elo import NBAEloCalculator, is_neutral_site
 from features import NBAFeatureProcessor
 from injuries import InjuryModel
 from matchups import create_matchup_data
+from power_rating import PARAMS as POWER_RATING_PARAMS, pair_games, pregame_ratings
 
 # Settings for the shipped pipeline. experiments.py overrides these to test alternatives.
 # First season used for training (SEASON_ID 2YYYY = regular season starting in YYYY).
@@ -72,6 +74,14 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     # Merged after get_final_data so missing values here never remove rows from the base set.
     context = add_context(raw_game_df)[['GAME_ID', 'TEAM_ID'] + CONTEXT_COLUMNS]
     processed_df = processed_df.merge(context, on=['GAME_ID', 'TEAM_ID'], how='left')
+
+    # Opponent-adjusted power rating going into each game (power_rating.py), fitted on earlier
+    # games only; RATING_DIFF is home minus away.
+    log("Fitting pre-game power ratings...")
+    ratings = pregame_ratings(pair_games(raw_game_df), **POWER_RATING_PARAMS)
+    is_home = processed_df['MATCHUP'].str.contains('vs.', regex=False)
+    processed_df['POWER_RATING'] = np.where(is_home, processed_df['GAME_ID'].map(ratings['RATING_HOME']),
+                                            processed_df['GAME_ID'].map(ratings['RATING_AWAY']))
 
     # One row per game with home-minus-away differentials. Neutral-site (bubble) games still
     # feed Elo and rolling stats, but are not training rows: "home" meant nothing there.
