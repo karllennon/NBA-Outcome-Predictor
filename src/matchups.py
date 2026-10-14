@@ -65,6 +65,13 @@ def create_matchup_data(processed_df):
         matchups['DARKO_INJURY_DIFF'] = injury_diff(matchups['DARKO_INJURY_LOSS_HOME'],
                                                     matchups['DARKO_INJURY_LOSS_AWAY'])
         extra.append('DARKO_INJURY_DIFF')
+    if 'TRAVEL_KM_HOME' in matchups:             # 2026-27 experiment: back-to-back candidates
+        h, a = matchups['IS_B2B_HOME'], matchups['IS_B2B_AWAY']
+        matchups['HOME_B2B'], matchups['AWAY_B2B'] = h, a
+        matchups['B2B_TRAVEL_DIFF'] = (h * matchups['TRAVEL_KM_HOME'] - a * matchups['TRAVEL_KM_AWAY']) / 1000
+        rested_h, rested_a = (matchups['DAYS_REST_HOME'] >= 2), (matchups['DAYS_REST_AWAY'] >= 2)
+        matchups['B2B_VS_RESTED_DIFF'] = (h * rested_a).astype(int) - (a * rested_h).astype(int)
+        extra += ['HOME_B2B', 'AWAY_B2B', 'B2B_TRAVEL_DIFF', 'B2B_VS_RESTED_DIFF']
     if 'RETURN_GAIN_HOME' in matchups:          # 2026-27 experiment: players back from injury
         matchups['RETURN_DIFF'] = (matchups['RETURN_GAIN_HOME'] - matchups['RETURN_GAIN_AWAY']) / 10
         extra.append('RETURN_DIFF')
