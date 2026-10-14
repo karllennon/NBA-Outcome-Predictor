@@ -451,3 +451,26 @@ per-fold choice (0.03, 0.3, 0.03, 0.03) adds noise. A Platt-style recalibration 
 recent training games hurt in every fold (fitted slopes 0.87-1.21, intercepts -0.21 to +0.04 move
 around from fold to fold). The model's caution at the extremes is therefore not a shrinkage
 setting but missing information; nothing was changed.
+
+### Returning players (not kept)
+
+The injury feature subtracts players who are out but never credits players coming back, while
+the team's rolling form (last 10 games) was built without them; players absent 21+ games are not
+in the rotation at all. `InjuryModel.returning` finds players back today from an injury absence:
+latest team is this one, missed 3+ of its games in a row, listed Out on the last report before the
+team's previous game, not listed Out on today's. Each is valued at his impact score times the share
+of the last 10 team games he missed; RETURN_DIFF = (home - away) / 10. The largest 2025-26 cases are
+the expected ones (Jokic after 16 games, Wembanyama 12, Embiid 13, Tatum 63).
+`python src/experiments.py returning_players`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 0.5947 | | |
+| **Shipped features** | **0.7579** | **0.5795** | | |
+| + RETURN_DIFF (48% of games) | 0.7576 | 0.5803 | +0.0008 (0.0007) | 1/4 |
+| + RETURN_DIFF, impact >= 20 only (14% of games; second try) | 0.7575 | 0.5803 | +0.0008 (0.0007) | 1/4 |
+
+Neither version helps, including the one limited to rotation-level players, which was chosen after
+seeing the first result. Elo and the rolling form appear to recover quickly enough once a player is
+back. The code stays, switched off by default (`returning=False`), so the shipped features are
+unchanged.

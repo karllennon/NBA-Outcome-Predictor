@@ -284,6 +284,27 @@ def regularization():
 
 
 @experiment
+def returning_players():
+    """
+    Players back from an injury absence (injuries.InjuryModel.returning): the team's rolling
+    form was built while they were out, and the injury feature only subtracts players who are
+    out, so a returning star is not credited. RETURN_DIFF = home minus away gain / 10.
+    """
+    reports = load_injury_reports()
+    df = dataset(injury_params=_with(returning=True), reports=reports)
+    stars = dataset(injury_params=_with(returning=True, returning_min_impact=20.0), reports=reports)
+    df['RETURN_DIFF_STARS'] = df['GAME_ID'].map(stars.set_index('GAME_ID')['RETURN_DIFF'])
+    for col in ('RETURN_DIFF', 'RETURN_DIFF_STARS'):
+        n = (df[col] != 0).sum()
+        print(f"{col}: games with a returning player on either side: {n} of {len(df)} ({n / len(df):.1%})")
+    return compare({'Shipped features': df,
+                    'Shipped + returning players (RETURN_DIFF)': (df, FEATURES + ['RETURN_DIFF']),
+                    'Shipped + returning players with impact >= 20 (second try)':
+                        (df, FEATURES + ['RETURN_DIFF_STARS'])},
+                   'Returning players')
+
+
+@experiment
 def margin_regression():
     base = shipped_dataset()
     margin = margin_model()

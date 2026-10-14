@@ -30,6 +30,8 @@ ACUTE_MAX = 3
 CHRONIC_MAX = 20
 RECENT_GAMES = 15        # games used to score each player's impact
 ROTATION_SIZE = 10
+RETURN_MIN_MISSES = 3    # returning players: missed at least this many team games in a row
+ROLLING_WINDOW = 10      # team form features average the last 10 games (features.py)
 
 
 def impact_score(df):
@@ -50,13 +52,17 @@ def status_from_misses(misses):
 
 class InjuryModel:
     def __init__(self, player_boxscores, team_games, reports=None, use_reports=False,
-                 include_doubtful=False, darko=None):
+                 include_doubtful=False, darko=None, returning=False, returning_min_impact=0.0):
         """
         use_reports / include_doubtful: who is out (see report_out).
         darko: optional darko.DarkoRatings; backfill then also adds DARKO_INJURY_LOSS, the same
             absent players valued by DARKO DPM instead of the box-score impact score.
+        returning: backfill also adds RETURN_GAIN (see return_gain), for the 2026-27 experiment;
+            returning_min_impact counts only returning players with at least that impact score.
         """
         self.darko = darko
+        self.returning_feature = returning
+        self.returning_min_impact = returning_min_impact
         players = player_boxscores.copy()
         players['GAME_DATE'] = pd.to_datetime(players['GAME_DATE'])
         players = players[players['MIN'] > 0]
@@ -214,6 +220,56 @@ class InjuryModel:
         loss, _ = self.net_loss(rot, out)
         return loss
 
+    def returning(self, team_name, game_date):
+        """
+        Players coming back today from an injury absence: their latest team is this one, they
+        missed at least RETURN_MIN_MISSES of its games in a row, the last report before the
+        team's previous game listed them Out, and today's last report before tip-off does not.
+        Uses only reports and box scores from before tip-off, the same way live and in training.
+        Returns a list of (player, impact, misses, gain): gain = impact x the share of the last
+        ROLLING_WINDOW team games he missed, the part of his value the team's rolling form left out.
+        Empty when there is no report for today's or the previous game.
+        """
+        as_of = np.datetime64(pd.Timestamp(game_date))
+        dates = self.team_dates.get(team_name)
+        today_out = self.report_out(team_name, game_date)
+        if dates is None or today_out is None:
+            return []
+        before = dates[dates < as_of]
+        if len(before) == 0:
+            return []
+        prev_out = self.report_out(team_name, pd.Timestamp(before[-1]))
+        if not prev_out:
+            return []
+        out = []
+        for player in prev_out:
+            if player in today_out:
+                continue
+            log = self.player_logs.get(player)
+            if log is None:
+                continue
+            p_dates, p_teams, p_impact = log
+            n = np.searchsorted(p_dates, as_of)
+            if n == 0 or p_teams[n - 1] != team_name:
+                continue
+            played = self.played_for_team.get((team_name, player), set())
+            misses = 0
+            for d in before[::-1]:
+                if d in played:
+                    break
+                misses += 1
+            if misses < RETURN_MIN_MISSES:
+                continue
+            impact = p_impact[max(0, n - RECENT_GAMES):n].mean()
+            if impact < self.returning_min_impact:
+                continue
+            out.append((player, impact, misses, impact * min(misses, ROLLING_WINDOW) / ROLLING_WINDOW))
+        return out
+
+    def return_gain(self, team_name, game_date):
+        """Total gain of the players returning today (see returning)."""
+        return sum(g for *_, g in self.returning(team_name, game_date))
+
     def darko_loss(self, out, game_date):
         """Same absent players, valued by DARKO DPM x minutes share (darko.DarkoRatings.value)."""
         return sum(self.darko.value(p, game_date) or 0.0 for p in out)
@@ -242,4 +298,6 @@ class InjuryModel:
         out['CORE_INJURY_LOSS'] = losses
         if self.darko is not None:
             out['DARKO_INJURY_LOSS'] = darko_losses
+        if self.returning_feature:
+            out['RETURN_GAIN'] = [self.return_gain(t, d) for t, d in zip(game_df['TEAM_NAME'], game_df['GAME_DATE'])]
         return out
