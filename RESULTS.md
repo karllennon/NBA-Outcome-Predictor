@@ -583,3 +583,33 @@ refinements were fixed in advance and each tested on its own. `python src/experi
 None changes held-out log loss by more than 0.0001; the existing rest, back-to-back and travel
 features already capture what these add. Not kept (the candidate columns stay in
 `create_matchup_data` as extras, unused by the model).
+
+### Player-based team strength (built; to be tested on 2026-27 games only)
+
+After nine experiments on the same 1,762 held-out games, those games are no longer used for new
+tests (repeated testing on one set makes a chance pass more likely). This candidate is built now
+and will be scored only on 2026-27 games: `python src/experiments.py player_strength` reports
+nothing until 200 games from 2026-10-20 exist.
+
+`src/player_strength.py` builds a team's strength for a game from the players expected to play:
+each player's box-score impact per minute (recent games weighted more, shrunk toward a
+replacement-level value), times his minutes, with the game's 240 minutes given to the available
+players in order of their usual minutes. Available = latest team is this one, played in one of its
+last 10 games or appeared on its injury report in the last 30 days, and not listed Out on the last
+report before tip-off. Trades, injuries and returns change the strength immediately, unlike Elo or
+the power rating. PLAYER_STRENGTH_DIFF = (home - away) / 10; not a shipped feature.
+
+Settings, chosen by how well the strength difference predicts home margins on games before
+2026-10-20 only (training data for the 2026-27 test; mean squared error, points^2):
+
+| Half-life (days) | Shrinkage 100 min | 300 | 1,000 | 3,000 | 10,000 |
+|---|---|---|---|---|---|
+| 60 | 221.72 | 219.44 | 218.04 | | |
+| 120 | 220.56 | 218.33 | 216.16 | **215.50** | 215.60 |
+| 240 | 220.97 | 219.01 | 216.71 | 215.68 | 215.68 |
+
+The first grid chose its edge (1,000 minutes), so it was widened; the chosen 120 days and 3,000
+minutes (about a season of a starter's minutes) are `player_strength.PARAMS`. The heavy shrinkage
+compresses differences between players (Denver on 2026-02-01: 155.3, or 148.6 without Jokic); the
+model's weight on the feature rescales it. Late-season contenders that rest starters (e.g. Oklahoma
+City with eight players listed Out on 2026-04-10) drop accordingly.
