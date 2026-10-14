@@ -341,6 +341,64 @@ def power_ratings():
 
 
 @experiment
+def power_rating_variants():
+    """
+    Two changes to the shipped power rating, each replacing RATING_DIFF, with every setting
+    (half-life, penalty, cap) chosen inside each fold on its training games:
+      blowout cap  fit on margins clipped to +-15, 20 or 25 points (or no cap), so garbage time
+                   moves ratings less; chosen by error against the actual (unclipped) margins
+      per 100      fit on margin per 100 possessions, which removes pace from the margin
+    """
+    import power_rating as PR
+    games = PR.pair_games(raw()[0])
+    grid = [(h, l) for h in PR.HALF_LIVES for l in PR.LAMBDAS]
+    capped = {(h, l, c): PR.pregame_ratings(games, h, l, cap=c) for h, l in grid for c in (15, 20, 25, None)}
+    per100 = {(h, l): PR.pregame_ratings(games, h, l, target='MARGIN_P100') for h, l in grid}
+    chosen = {}
+
+    def variant(name, tables, target):
+        def fit_predict(train, test):
+            start = test['GAME_DATE'].min()
+            if (name, start) not in chosen:
+                chosen[(name, start)] = PR.tune(tables, games, start, target=target)[0]
+            t = tables[chosen[(name, start)]]
+            diff = t['RATING_HOME'] - t['RATING_AWAY']
+            tr = train.assign(RATING_DIFF=train['GAME_ID'].map(diff))
+            te = test.assign(RATING_DIFF=test['GAME_ID'].map(diff))
+            return make_logistic().fit(tr[FEATURES], tr['TARGET']).predict_proba(te[FEATURES])[:, 1]
+        return fit_predict
+
+    base = shipped_dataset()
+    results = compare({'Shipped: power rating on raw margins': base,
+                       'Blowout cap (15 / 20 / 25 / none, tuned per fold)': (base, variant('cap', capped, 'MARGIN')),
+                       'Per 100 possessions (tuned per fold)': (base, variant('per100', per100, 'MARGIN_P100'))},
+                      'Power rating variants')
+    for (name, start), key in sorted(chosen.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        print(f"  {name}, fold starting {start.date()}: {key}")
+    return results
+
+
+@experiment
+def back_to_backs():
+    """
+    Three back-to-back refinements, each tested on its own against the shipped features
+    (pre-specified; with three tests, one may pass by chance):
+      A  home and away back-to-backs as separate features, replacing the symmetric B2B_DIFF
+      B  back-to-back x km travelled since the previous game (B2B_TRAVEL_DIFF, 1,000 km units)
+      C  back-to-back against an opponent with 2+ days of rest (B2B_VS_RESTED_DIFF)
+    """
+    base = shipped_dataset()
+    no_b2b = [f for f in FEATURES if f != 'B2B_DIFF']
+    print('Share of games with a back-to-back: home %.1f%%, away %.1f%%' % (
+        100 * base['HOME_B2B'].mean(), 100 * base['AWAY_B2B'].mean()))
+    return compare({'Shipped features': base,
+                    'A: home / away back-to-back separately': (base, no_b2b + ['HOME_B2B', 'AWAY_B2B']),
+                    'B: + back-to-back after travel': (base, FEATURES + ['B2B_TRAVEL_DIFF']),
+                    'C: + back-to-back vs rested opponent': (base, FEATURES + ['B2B_VS_RESTED_DIFF'])},
+                   'Back-to-backs')
+
+
+@experiment
 def margin_regression():
     base = shipped_dataset()
     margin = margin_model()

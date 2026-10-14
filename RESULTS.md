@@ -549,3 +549,37 @@ checks that it equals the training value.
 
 Shipped model after this change, walk-forward on 1,762 held-out games: **ROC-AUC 0.7629, accuracy
 70.66%, log loss 0.5763, Brier 0.1966**; spread MAE 10.91 points.
+
+### Power rating variants (not kept)
+
+Two changes to the shipped rating, each replacing RATING_DIFF, with every setting chosen inside
+each fold on its training games. `python src/experiments.py power_rating_variants`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| **Shipped: rating on raw margins** | **0.7629** | **0.5763** | | |
+| Blowout cap (margins clipped to 15 / 20 / 25 / none) | 0.7628 | 0.5765 | +0.0002 (0.0007) | 1/4 |
+| Margin per 100 possessions | 0.7632 | 0.5761 | -0.0002 (0.0002) | 3/4 |
+
+The cap is not kept: every fold chose the loosest cap (25 points), so garbage time is not
+distorting the rating. Per-possession margins are 0.0002 lower, about one standard error, and were
+the better of the two variants tried; a gain that small is within noise and not worth changing the
+shipped feature for, so it is not kept either. The options stay in `power_rating.pregame_ratings`
+(`target`, `cap`) to re-test with more data.
+
+### Back-to-backs (not kept)
+
+The shipped model has one symmetric back-to-back feature (B2B_DIFF, second night of a
+back-to-back, home minus away; 17.6% of games have a home and 18.5% an away back-to-back). Three
+refinements were fixed in advance and each tested on its own. `python src/experiments.py back_to_backs`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| **Shipped features** | **0.7629** | **0.5763** | | |
+| A: home and away back-to-backs as separate features | 0.7630 | 0.5762 | -0.0001 (0.0005) | 3/4 |
+| B: + back-to-back x km travelled since the previous game | 0.7627 | 0.5764 | +0.0001 (0.0002) | 2/4 |
+| C: + back-to-back against an opponent with 2+ days of rest | 0.7629 | 0.5763 | +0.0000 (0.0000) | 3/4 |
+
+None changes held-out log loss by more than 0.0001; the existing rest, back-to-back and travel
+features already capture what these add. Not kept (the candidate columns stay in
+`create_matchup_data` as extras, unused by the model).

@@ -26,22 +26,34 @@ PARAMS = {'half_life': 60, 'lam': 5.0}
 
 
 def pair_games(team_games):
-    """One row per game: GAME_ID, GAME_DATE, HOME_ID, AWAY_ID, MARGIN (home), NEUTRAL."""
+    """
+    One row per game: GAME_ID, GAME_DATE, HOME_ID, AWAY_ID, MARGIN (home), NEUTRAL, and when the
+    box-score totals are present, MARGIN_P100 (home margin per 100 possessions; experiment only).
+    """
     g = team_games.copy()
     g['GAME_DATE'] = pd.to_datetime(g['GAME_DATE'])
-    home = g[g['MATCHUP'].str.contains('vs.', regex=False)][['GAME_ID', 'GAME_DATE', 'TEAM_ID', 'PLUS_MINUS']]
-    away = g[g['MATCHUP'].str.contains('@', regex=False)][['GAME_ID', 'TEAM_ID']]
+    box = all(c in g for c in ('FGA', 'FTA', 'OREB', 'TOV'))
+    if box:
+        g['POSS'] = g['FGA'] + 0.44 * g['FTA'] - g['OREB'] + g['TOV']
+    extra = ['POSS'] if box else []
+    home = g[g['MATCHUP'].str.contains('vs.', regex=False)][['GAME_ID', 'GAME_DATE', 'TEAM_ID', 'PLUS_MINUS'] + extra]
+    away = g[g['MATCHUP'].str.contains('@', regex=False)][['GAME_ID', 'TEAM_ID'] + extra]
     out = home.merge(away, on='GAME_ID', suffixes=('_HOME', '_AWAY')).rename(columns={
         'TEAM_ID_HOME': 'HOME_ID', 'TEAM_ID_AWAY': 'AWAY_ID', 'PLUS_MINUS': 'MARGIN'})
     out = out.dropna(subset=['MARGIN']).sort_values(['GAME_DATE', 'GAME_ID']).reset_index(drop=True)
     out['NEUTRAL'] = is_neutral_site(out['GAME_DATE'])
-    return out[['GAME_ID', 'GAME_DATE', 'HOME_ID', 'AWAY_ID', 'MARGIN', 'NEUTRAL']]
+    cols = ['GAME_ID', 'GAME_DATE', 'HOME_ID', 'AWAY_ID', 'MARGIN', 'NEUTRAL']
+    if box:
+        out['MARGIN_P100'] = out['MARGIN'] / ((out['POSS_HOME'] + out['POSS_AWAY']) / 2) * 100
+        cols.append('MARGIN_P100')
+    return out[cols]
 
 
-def pregame_ratings(games, half_life, lam):
+def pregame_ratings(games, half_life, lam, target='MARGIN', cap=None):
     """
     For every game, the ratings fitted on games before its date. Returns a DataFrame indexed by
     GAME_ID: RATING_HOME, RATING_AWAY, HCA (fitted home-court points) and PRED_MARGIN.
+    target / cap (experiments): fit on another margin column, or on margins clipped to +-cap.
     """
     teams = np.sort(pd.unique(games[['HOME_ID', 'AWAY_ID']].values.ravel()))
     idx = {t: i for i, t in enumerate(teams)}
@@ -61,7 +73,8 @@ def pregame_ratings(games, half_life, lam):
                                   'RATING_AWAY': theta[a], 'HCA': hca,
                                   'PRED_MARGIN': hca + theta[h] - theta[a]}))
         # add today's games after rating them
-        for hi, ai, m, neutral in zip(h, a, g['MARGIN'].values, g['NEUTRAL'].values):
+        y = g[target].values if cap is None else np.clip(g[target].values, -cap, cap)
+        for hi, ai, m, neutral in zip(h, a, y, g['NEUTRAL'].values):
             x = np.zeros(k)
             x[hi], x[ai], x[-1] = 1.0, -1.0, 0.0 if neutral else 1.0
             A += np.outer(x, x)
@@ -98,13 +111,14 @@ def rating_tables(games, half_lives=HALF_LIVES, lambdas=LAMBDAS):
     return {(h, l): pregame_ratings(games, h, l) for h in half_lives for l in lambdas}
 
 
-def tune(tables, games, before, burn_in_days=BURN_IN_DAYS):
+def tune(tables, games, before, burn_in_days=BURN_IN_DAYS, target='MARGIN'):
     """
-    The (half_life, lam) whose pre-game margin prediction had the lowest squared error on games
-    before `before` (skipping the first burn_in_days of data). Uses no games from `before` on.
+    The table key (e.g. (half_life, lam)) whose pre-game prediction had the lowest squared error
+    against `target` on games before `before` (skipping the first burn_in_days of data). Uses no
+    games from `before` on.
     """
     start = games['GAME_DATE'].min() + pd.Timedelta(days=burn_in_days)
     train = games[(games['GAME_DATE'] >= start) & (games['GAME_DATE'] < pd.Timestamp(before))].set_index('GAME_ID')
-    scores = {key: float(np.mean((t.loc[train.index, 'PRED_MARGIN'] - train['MARGIN']) ** 2))
+    scores = {key: float(np.mean((t.loc[train.index, 'PRED_MARGIN'] - train[target]) ** 2))
               for key, t in tables.items()}
     return min(scores, key=scores.get), scores
