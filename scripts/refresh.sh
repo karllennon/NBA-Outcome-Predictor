@@ -27,6 +27,8 @@ fi
 "$PY" -u src/schedule.py --prefetch || echo "[!] schedule prefetch failed"
 # Archive the latest injury report and today's Kalshi prices (non-fatal: offseason or outage)
 "$PY" -u src/injury_reports.py || echo "[!] injury report fetch failed"
+# Snapshot every team's current roster (the NBA serves only today's; data/rosters/)
+"$PY" -u src/rosters.py || echo "[!] roster snapshot failed"
 # Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)
 "$PY" -u src/daily_slate.py || echo "[!] slate / prediction log failed"
 # Tip-off prices of last night's logged games (for closing line value; local, git-ignored)

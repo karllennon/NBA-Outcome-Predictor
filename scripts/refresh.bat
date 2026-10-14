@@ -24,6 +24,8 @@ REM Cache today's schedule, the slate's fallback when stats.nba.com is down
 "%PY%" -u src\schedule.py --prefetch || echo [!] schedule prefetch failed
 REM Archive the latest injury report and today's Kalshi prices (non-fatal: offseason or outage)
 "%PY%" -u src\injury_reports.py || echo [!] injury report fetch failed
+REM Snapshot every team's current roster (the NBA serves only today's; data\rosters\)
+"%PY%" -u src\rosters.py || echo [!] roster snapshot failed
 REM Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)
 "%PY%" -u src\daily_slate.py || echo [!] slate / prediction log failed
 REM Tip-off prices of last night's logged games (for closing line value; local, git-ignored)

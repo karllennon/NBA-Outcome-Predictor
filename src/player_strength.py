@@ -16,7 +16,8 @@ A team's strength for a game is built from the players expected to play:
                     one of its last RECENT_TEAM_GAMES games, appeared on its injury report in the
                     last REPORT_LOOKBACK_DAYS days, or was on its report for its previous game even
                     if that was months ago: a player back from a season-long absence at the
-                    season opener) minus players listed Out on the last
+                    season opener; when a roster snapshot from rosters.py covers the date, the
+                    team's roster that day instead) minus players listed Out on the last
                     report before tip-off (without a report: minus players who missed the
                     team's previous game, the same fallback as the injury feature)
     strength        sum over available players of value x minutes, the 240 minutes of a game
@@ -63,7 +64,7 @@ def allocate_minutes(usual, total=TEAM_MINUTES):
 
 class PlayerStrength:
     def __init__(self, player_boxscores, team_games, injury_model=None, half_life=None, prior_minutes=None,
-                 replacement=None, decay=None):
+                 replacement=None, decay=None, rosters=None):
         self.half_life = PARAMS['half_life'] if half_life is None else half_life
         self.prior_minutes = PARAMS['prior_minutes'] if prior_minutes is None else prior_minutes
         self.decay = PARAMS['decay'] if decay is None else decay
@@ -80,6 +81,9 @@ class PlayerStrength:
         tg['GAME_DATE'] = pd.to_datetime(tg['GAME_DATE'])
         self.team_dates = {t: np.sort(g['GAME_DATE'].unique()) for t, g in tg.groupby('TEAM_NAME')}
         self.injuries = injury_model
+        self.rosters = rosters                      # rosters.Rosters, or None
+        self.id_to_name = (dict(zip(p['PLAYER_ID'], p['PLAYER_NAME'])) if 'PLAYER_ID' in p else {})
+        self.team_ids = (dict(zip(tg['TEAM_NAME'], tg['TEAM_ID'])) if 'TEAM_ID' in tg else {})
         if replacement is None:
             # one constant from games before the test season (per-minute value of players with 300+ minutes)
             early = p[p['GAME_DATE'] < pd.Timestamp(FIRST_TEST_DATE)].groupby('PLAYER_NAME')[['IMPACT', 'MIN']].sum()
@@ -137,6 +141,15 @@ class PlayerStrength:
     def candidates(self, team_name, as_of):
         """{player: (value, minutes)} for players who may suit up for the team (see module doc)."""
         as_of = pd.Timestamp(as_of)
+        if self.rosters is not None:
+            ids = self.rosters.on(self.team_ids.get(team_name), as_of)
+            if ids is not None:            # the team's roster that day: trades and signings count at once
+                out = {}
+                for pid in ids:
+                    name = self.id_to_name.get(pid)
+                    info = self.player(name, as_of) if name else None
+                    out[name or f'PLAYER_ID {pid}'] = info[:2] if info else (self.replacement, 0.0)
+                return out
         dates = self.team_dates.get(team_name)
         if dates is None:
             return {}
