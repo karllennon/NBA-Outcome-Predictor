@@ -470,3 +470,29 @@ slice was again the model picking the market's underdog, which remains an untest
 (see above). Conclusion: on last season's prices the decision rules show no reliable edge; the
 paper-trade log this season is the real test. Detailed tables: `python src/experiments.py
 paper_trades` (local report, git-ignored).
+
+## Model improvements for the 2026-27 season
+
+Candidates are tested with the same walk-forward protocol (1,762 held-out games, Elo re-tuned
+per fold) and kept only if held-out log loss improves.
+
+### Regularization strength (not kept)
+
+The logistic regression's C = 0.1 had never been tuned, and the model's predictions are cautious
+at the extremes. `python src/experiments.py regularization`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 0.5947 | | |
+| **Shipped: C = 0.1** | **0.7579** | **0.5795** | | |
+| C = 0.03 (fixed) | 0.7579 | 0.5800 | +0.0005 (0.0006) | 2/4 |
+| C = 0.3 / 1 / 10 (fixed) | 0.7577-0.7573 | 0.5796-0.5798 | +0.0001 to +0.0003 | 1-2/4 |
+| C = 0.01 / 0.003 (fixed) | 0.7564 / 0.7524 | 0.5826 / 0.5904 | +0.0031 / +0.0109 | 2/4, 0/4 |
+| C tuned per fold (last 20% of training games) | 0.7572 | 0.5803 | +0.0008 (0.0006) | 1/4 |
+| C = 0.1 + recalibration fitted per fold | 0.7525 | 0.5865 | +0.0070 (0.0016) | 0/4 |
+
+Log loss is flat for C from 0.03 up, so the shipped value is already in the best range; the
+per-fold choice (0.03, 0.3, 0.03, 0.03) adds noise. A Platt-style recalibration on the most
+recent training games hurt in every fold (fitted slopes 0.87-1.21, intercepts -0.21 to +0.04 move
+around from fold to fold). The model's caution at the extremes is therefore not a shrinkage
+setting but missing information; nothing was changed.
