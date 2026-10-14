@@ -586,3 +586,14 @@ Two changes before any test, prompted by Tyrese Haliburton (out all of 2025-26, 
   Calendar decay fits the typical game best (it also reflects aging and changing roles), so it
   stays; the cost is that a star back from a season-long absence starts near replacement value
   until he plays again. The dashboard's Predictor page has a what-if view for that case.
+
+**Rosters (added before any test).** `src/rosters.py` saves every team's roster from stats.nba.com
+each morning (`data/rosters/YYYY-MM-DD.csv`, from 2026-10-14). The NBA serves only today's roster,
+so rosters are used only for games on or after a snapshot and never to rebuild older seasons,
+where they would reveal moves that had not happened yet. When a snapshot from the game day (or up
+to 3 days before) exists, the player strength's candidates for a team are its roster that day,
+matched to box scores by player id: offseason signings and trades count for their new team at once
+(e.g. Kelly Oubre Jr. and Larry Nance Jr. for Indiana in 2026-27, instead of their old teams), and
+players who left are dropped. Players on a roster with no NBA games get replacement value and no
+expected minutes. Every 2026-27 game the experiment scores will have a pre-game snapshot. The
+dashboard's what-if list also keeps only players on the team's current roster.

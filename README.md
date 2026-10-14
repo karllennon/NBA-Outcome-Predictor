@@ -93,6 +93,7 @@ src/
   injury_reports.py  # Official injury report download, parsing, name matching, archive
   elo.py             # Elo ratings, tuning grid, neutral-site handling
   power_rating.py    # Opponent-adjusted power ratings from decayed game margins
+  rosters.py         # Daily snapshots of every team's roster (data/rosters/)
   injuries.py        # Rotation, absences and injury impact (training + live)
   features.py        # Team stats, rest and rolling form
   context.py         # Travel, time zones, schedule density, altitude, SOS-adjusted rating

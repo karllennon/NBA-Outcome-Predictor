@@ -37,6 +37,10 @@ class GamePredictor:
         players.columns = players.columns.str.strip()
         self.team_games = team_games
         self._init_power_ratings(team_games)
+        # Roster snapshots (rosters.py), only for the what-if view's list of returning players
+        from rosters import Rosters
+        self.rosters = Rosters()
+        self.player_ids = dict(zip(players['PLAYER_NAME'], players['PLAYER_ID']))
         # Same settings as the training pipeline, so the injury feature means the same thing
         params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
         self.injuries = InjuryModel(players, team_games, **params)
@@ -65,12 +69,15 @@ class GamePredictor:
     def long_absent(self, team_name, game_date=None, min_impact=10.0, max_days_away=600):
         """
         Players the model leaves out of the team entirely because they have missed more than
-        CHRONIC_MAX games in a row (e.g. a season-long injury), whose latest team is this one:
-        DataFrame PLAYER_NAME, impact_score (his last 15 games), games_missed, last_game. Only for
-        the dashboard's what-if view; the model itself never uses this list.
+        CHRONIC_MAX games in a row (e.g. a season-long injury), whose latest team is this one and,
+        when a roster snapshot covers the date, who are on the team's roster: DataFrame
+        PLAYER_NAME, impact_score (his last 15 games), games_missed, last_game. Only for the
+        dashboard's what-if view; the model itself never uses this list.
         """
         from injuries import CHRONIC_MAX, RECENT_GAMES
         as_of = np.datetime64(pd.Timestamp(game_date or date.today()))
+        rosters = getattr(self, 'rosters', None)
+        on_roster = rosters.on(self.team_ids.get(team_name), pd.Timestamp(as_of)) if rosters is not None else None
         dates = self.injuries.team_dates.get(team_name)
         rows = []
         if dates is not None:
@@ -85,6 +92,8 @@ class GamePredictor:
                     continue
                 missed = int(np.sum(before > last))
                 impact = float(p_impact[max(0, n - RECENT_GAMES):n].mean())
+                if on_roster is not None and self.player_ids.get(player) not in on_roster:
+                    continue           # no longer on the team (released, traded, retired)
                 if missed > CHRONIC_MAX and impact >= min_impact:
                     rows.append((player, impact, missed, pd.Timestamp(last).date()))
         out = pd.DataFrame(rows, columns=['PLAYER_NAME', 'impact_score', 'games_missed', 'last_game'])
