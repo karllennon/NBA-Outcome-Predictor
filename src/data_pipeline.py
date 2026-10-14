@@ -42,7 +42,7 @@ def load_injury_reports():
 
 
 def build_dataset(raw_game_df, player_boxscores, elo_params=None,
-                  injury_params=None, reports=None, verbose=True, darko=None):
+                  injury_params=None, reports=None, verbose=True, darko=None, player_strength=False):
     """
     Returns (matchup training set, feature processor, Elo calculator).
     Every feature for a game uses only games before it.
@@ -60,6 +60,10 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     injury_model = InjuryModel(player_boxscores, raw_game_df,
                                reports=reports, darko=darko, **injury_params)
     df_with_injuries = injury_model.backfill(df_with_elo, verbose=verbose)
+    if player_strength:     # 2026-27 experiment (player_strength.py), not a shipped feature
+        from player_strength import PlayerStrength
+        log("Backfilling player-based team strength...")
+        df_with_injuries = PlayerStrength(player_boxscores, raw_game_df, injury_model).backfill(df_with_injuries)
 
     # Team stats, rest, and rolling form
     log("Engineering features...")

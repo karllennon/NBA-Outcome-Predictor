@@ -72,6 +72,9 @@ def create_matchup_data(processed_df):
         rested_h, rested_a = (matchups['DAYS_REST_HOME'] >= 2), (matchups['DAYS_REST_AWAY'] >= 2)
         matchups['B2B_VS_RESTED_DIFF'] = (h * rested_a).astype(int) - (a * rested_h).astype(int)
         extra += ['HOME_B2B', 'AWAY_B2B', 'B2B_TRAVEL_DIFF', 'B2B_VS_RESTED_DIFF']
+    if 'PLAYER_STRENGTH_HOME' in matchups:      # 2026-27 experiment: player-based team strength
+        matchups['PLAYER_STRENGTH_DIFF'] = (matchups['PLAYER_STRENGTH_HOME'] - matchups['PLAYER_STRENGTH_AWAY']) / 10
+        extra.append('PLAYER_STRENGTH_DIFF')
     if 'RETURN_GAIN_HOME' in matchups:          # 2026-27 experiment: players back from injury
         matchups['RETURN_DIFF'] = (matchups['RETURN_GAIN_HOME'] - matchups['RETURN_GAIN_AWAY']) / 10
         extra.append('RETURN_DIFF')

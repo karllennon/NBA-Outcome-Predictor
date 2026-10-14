@@ -35,10 +35,10 @@ def raw():
     return _raw
 
 
-def dataset(elo_params=None, injury_params=None, reports=None):
+def dataset(elo_params=None, injury_params=None, reports=None, **kw):
     games, players = raw()
     df, _, _ = build_dataset(games, players, elo_params=elo_params,
-                             injury_params=injury_params, reports=reports, verbose=False)
+                             injury_params=injury_params, reports=reports, verbose=False, **kw)
     return df
 
 
@@ -396,6 +396,28 @@ def back_to_backs():
                     'B: + back-to-back after travel': (base, FEATURES + ['B2B_TRAVEL_DIFF']),
                     'C: + back-to-back vs rested opponent': (base, FEATURES + ['B2B_VS_RESTED_DIFF'])},
                    'Back-to-backs')
+
+
+@experiment
+def player_strength(min_test_games=200):
+    """
+    Player-based team strength (player_strength.py), scored ONLY on 2026-27 games: the 2025-26
+    held-out games were used for nine experiments already (RESULTS.md, Model improvements for the
+    2026-27 season), so they are not used again. Prints a notice and stops until enough new games
+    exist. Main variant: added to the shipped features; replacing the injury feature (which it
+    overlaps) is shown for reference.
+    """
+    from player_strength import FIRST_TEST_DATE
+    df = dataset(reports=load_injury_reports(), player_strength=True)
+    n_new = int((df['GAME_DATE'] >= pd.Timestamp(FIRST_TEST_DATE)).sum())
+    if n_new < min_test_games:
+        print(f"Only {n_new} games since {FIRST_TEST_DATE}; need {min_test_games} to score this experiment.")
+        return None
+    no_injury = [f for f in FEATURES if f != 'CORE_INJURY_DIFF']
+    return compare({'Shipped features': df,
+                    'Shipped + player strength (PLAYER_STRENGTH_DIFF)': (df, FEATURES + ['PLAYER_STRENGTH_DIFF']),
+                    'Player strength instead of the injury feature (reference)': (df, no_injury + ['PLAYER_STRENGTH_DIFF'])},
+                   f'Player strength (games from {FIRST_TEST_DATE} only)', test_from=FIRST_TEST_DATE)
 
 
 @experiment
