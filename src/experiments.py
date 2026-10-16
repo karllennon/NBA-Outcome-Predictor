@@ -9,6 +9,7 @@ same held-out games against the Elo-only baseline and the current shipped config
 Results are printed as a table; RESULTS.md records them with commentary.
 """
 import argparse
+import numpy as np
 import pandas as pd
 import data_pipeline
 from data_pipeline import load_raw, load_injury_reports, build_dataset
@@ -34,10 +35,10 @@ def raw():
     return _raw
 
 
-def dataset(elo_params=None, injury_params=None, reports=None):
+def dataset(elo_params=None, injury_params=None, reports=None, **kw):
     games, players = raw()
     df, _, _ = build_dataset(games, players, elo_params=elo_params,
-                             injury_params=injury_params, reports=reports, verbose=False)
+                             injury_params=injury_params, reports=reports, verbose=False, **kw)
     return df
 
 
@@ -196,6 +197,227 @@ def margin_model(sigma_holdout=0.2):
 
     fit_predict.sigmas = []
     return fit_predict
+
+
+C_GRID = (0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
+
+
+def _logistic(c):
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    return make_pipeline(StandardScaler(), LogisticRegression(C=c, max_iter=2000))
+
+
+def _split_recent(train, holdout=0.2):
+    """Earlier and most recent parts of a fold's training games (games sorted by date)."""
+    train = train.sort_values(['GAME_DATE', 'GAME_ID'])
+    cut = int(len(train) * (1 - holdout))
+    return train.iloc[:cut], train.iloc[cut:]
+
+
+def tuned_c(grid=C_GRID, holdout=0.2):
+    """
+    Logistic regression whose C is chosen inside each fold: fit on the earlier 80% of the fold's
+    training games for every C, keep the C with the lowest log loss on the most recent 20%, then
+    refit on all training games. Test games are never used.
+    """
+    from sklearn.metrics import log_loss
+
+    def fit_predict(train, test):
+        early, recent = _split_recent(train, holdout)
+        scores = {c: log_loss(recent['TARGET'], _logistic(c).fit(early[FEATURES], early['TARGET'])
+                              .predict_proba(recent[FEATURES])[:, 1]) for c in grid}
+        best = min(scores, key=scores.get)
+        fit_predict.chosen.append((test['GAME_DATE'].min().date(), best))
+        return _logistic(best).fit(train[FEATURES], train['TARGET']).predict_proba(test[FEATURES])[:, 1]
+
+    fit_predict.chosen = []
+    return fit_predict
+
+
+def platt_scaled(holdout=0.2):
+    """
+    Shipped logistic regression plus a recalibration fitted inside each fold: a one-feature
+    logistic fit of the outcome on the model's log-odds for the most recent 20% of training
+    games (model fit on the earlier 80%); the slope says whether predictions should be more
+    (>1) or less (<1) extreme. Applied to the model refit on all training games.
+    """
+    from sklearn.linear_model import LogisticRegression
+
+    def logit(p):
+        p = np.clip(p, 1e-6, 1 - 1e-6)
+        return np.log(p / (1 - p)).reshape(-1, 1)
+
+    def fit_predict(train, test):
+        early, recent = _split_recent(train, holdout)
+        p_recent = make_logistic().fit(early[FEATURES], early['TARGET']).predict_proba(recent[FEATURES])[:, 1]
+        cal = LogisticRegression(C=1e6).fit(logit(p_recent), recent['TARGET'])
+        fit_predict.slopes.append((test['GAME_DATE'].min().date(), float(cal.coef_[0][0]), float(cal.intercept_[0])))
+        p_test = make_logistic().fit(train[FEATURES], train['TARGET']).predict_proba(test[FEATURES])[:, 1]
+        return cal.predict_proba(logit(p_test))[:, 1]
+
+    fit_predict.slopes = []
+    return fit_predict
+
+
+@experiment
+def regularization():
+    """
+    Is the shipped C = 0.1 (never tuned) too strong? Fixed C values for reference, C tuned
+    inside each fold on training games only, and a recalibration fitted on training games.
+    """
+    base = shipped_dataset()
+    tuned, platt = tuned_c(), platt_scaled()
+    variants = {'Shipped: logistic, C = 0.1': base}
+    for c in C_GRID:
+        if c != 0.1:
+            variants[f'C = {c:g} (fixed, for reference)'] = (base, lambda tr, te, c=c: _logistic(c).fit(
+                tr[FEATURES], tr['TARGET']).predict_proba(te[FEATURES])[:, 1])
+    variants['C tuned per fold (training games only)'] = (base, tuned)
+    variants['C = 0.1 + recalibration fitted per fold'] = (base, platt)
+    results = compare(variants, 'Regularization strength')
+    print(f"  C chosen per fold: {tuned.chosen}")
+    print(f"  recalibration per fold (fold start, slope, intercept): "
+          f"{[(d, round(s, 3), round(i, 3)) for d, s, i in platt.slopes]}")
+    return results
+
+
+@experiment
+def returning_players():
+    """
+    Players back from an injury absence (injuries.InjuryModel.returning): the team's rolling
+    form was built while they were out, and the injury feature only subtracts players who are
+    out, so a returning star is not credited. RETURN_DIFF = home minus away gain / 10.
+    """
+    reports = load_injury_reports()
+    df = dataset(injury_params=_with(returning=True), reports=reports)
+    stars = dataset(injury_params=_with(returning=True, returning_min_impact=20.0), reports=reports)
+    df['RETURN_DIFF_STARS'] = df['GAME_ID'].map(stars.set_index('GAME_ID')['RETURN_DIFF'])
+    for col in ('RETURN_DIFF', 'RETURN_DIFF_STARS'):
+        n = (df[col] != 0).sum()
+        print(f"{col}: games with a returning player on either side: {n} of {len(df)} ({n / len(df):.1%})")
+    return compare({'Shipped features': df,
+                    'Shipped + returning players (RETURN_DIFF)': (df, FEATURES + ['RETURN_DIFF']),
+                    'Shipped + returning players with impact >= 20 (second try)':
+                        (df, FEATURES + ['RETURN_DIFF_STARS'])},
+                   'Returning players')
+
+
+@experiment
+def power_ratings():
+    """
+    Opponent-adjusted power ratings (power_rating.py): RATING_DIFF = home minus away rating, from a
+    decayed ridge regression on earlier game margins. The half-life and penalty are chosen inside
+    each fold by margin error on its training games, like the Elo settings (every fold chose the
+    shipped power_rating.PARAMS). Kept (RESULTS.md); replacing ELO_DIFF is shown for reference.
+    """
+    import power_rating as PR
+    games = PR.pair_games(raw()[0])
+    tables = PR.rating_tables(games)
+    chosen = {}
+
+    def with_rating(cols):
+        def fit_predict(train, test):
+            start = test['GAME_DATE'].min()
+            if start not in chosen:
+                chosen[start] = PR.tune(tables, games, start)[0]
+            t = tables[chosen[start]]
+            diff = t['RATING_HOME'] - t['RATING_AWAY']
+            tr = train.assign(RATING_DIFF=train['GAME_ID'].map(diff))
+            te = test.assign(RATING_DIFF=test['GAME_ID'].map(diff))
+            return make_logistic().fit(tr[cols], tr['TARGET']).predict_proba(te[cols])[:, 1]
+        return fit_predict
+
+    base = shipped_dataset()
+    before = [f for f in FEATURES if f != 'RATING_DIFF']
+    no_elo = [f for f in FEATURES if f != 'ELO_DIFF']
+    results = compare({'Before: no power rating': (base, before),
+                       'Shipped: + power rating (RATING_DIFF, tuned per fold)': (base, with_rating(FEATURES)),
+                       'Power rating instead of Elo (reference)': (base, with_rating(no_elo))},
+                      'Power ratings')
+    print(f"  (half-life days, penalty) chosen per fold: {[(d.date(), k) for d, k in sorted(chosen.items())]}")
+    return results
+
+
+@experiment
+def power_rating_variants():
+    """
+    Two changes to the shipped power rating, each replacing RATING_DIFF, with every setting
+    (half-life, penalty, cap) chosen inside each fold on its training games:
+      blowout cap  fit on margins clipped to +-15, 20 or 25 points (or no cap), so garbage time
+                   moves ratings less; chosen by error against the actual (unclipped) margins
+      per 100      fit on margin per 100 possessions, which removes pace from the margin
+    """
+    import power_rating as PR
+    games = PR.pair_games(raw()[0])
+    grid = [(h, l) for h in PR.HALF_LIVES for l in PR.LAMBDAS]
+    capped = {(h, l, c): PR.pregame_ratings(games, h, l, cap=c) for h, l in grid for c in (15, 20, 25, None)}
+    per100 = {(h, l): PR.pregame_ratings(games, h, l, target='MARGIN_P100') for h, l in grid}
+    chosen = {}
+
+    def variant(name, tables, target):
+        def fit_predict(train, test):
+            start = test['GAME_DATE'].min()
+            if (name, start) not in chosen:
+                chosen[(name, start)] = PR.tune(tables, games, start, target=target)[0]
+            t = tables[chosen[(name, start)]]
+            diff = t['RATING_HOME'] - t['RATING_AWAY']
+            tr = train.assign(RATING_DIFF=train['GAME_ID'].map(diff))
+            te = test.assign(RATING_DIFF=test['GAME_ID'].map(diff))
+            return make_logistic().fit(tr[FEATURES], tr['TARGET']).predict_proba(te[FEATURES])[:, 1]
+        return fit_predict
+
+    base = shipped_dataset()
+    results = compare({'Shipped: power rating on raw margins': base,
+                       'Blowout cap (15 / 20 / 25 / none, tuned per fold)': (base, variant('cap', capped, 'MARGIN')),
+                       'Per 100 possessions (tuned per fold)': (base, variant('per100', per100, 'MARGIN_P100'))},
+                      'Power rating variants')
+    for (name, start), key in sorted(chosen.items(), key=lambda kv: (kv[0][0], kv[0][1])):
+        print(f"  {name}, fold starting {start.date()}: {key}")
+    return results
+
+
+@experiment
+def back_to_backs():
+    """
+    Three back-to-back refinements, each tested on its own against the shipped features
+    (pre-specified; with three tests, one may pass by chance):
+      A  home and away back-to-backs as separate features, replacing the symmetric B2B_DIFF
+      B  back-to-back x km travelled since the previous game (B2B_TRAVEL_DIFF, 1,000 km units)
+      C  back-to-back against an opponent with 2+ days of rest (B2B_VS_RESTED_DIFF)
+    """
+    base = shipped_dataset()
+    no_b2b = [f for f in FEATURES if f != 'B2B_DIFF']
+    print('Share of games with a back-to-back: home %.1f%%, away %.1f%%' % (
+        100 * base['HOME_B2B'].mean(), 100 * base['AWAY_B2B'].mean()))
+    return compare({'Shipped features': base,
+                    'A: home / away back-to-back separately': (base, no_b2b + ['HOME_B2B', 'AWAY_B2B']),
+                    'B: + back-to-back after travel': (base, FEATURES + ['B2B_TRAVEL_DIFF']),
+                    'C: + back-to-back vs rested opponent': (base, FEATURES + ['B2B_VS_RESTED_DIFF'])},
+                   'Back-to-backs')
+
+
+@experiment
+def player_strength(min_test_games=200):
+    """
+    Player-based team strength (player_strength.py), scored ONLY on 2026-27 games: the 2025-26
+    held-out games were used for nine experiments already (RESULTS.md, Model improvements for the
+    2026-27 season), so they are not used again. Prints a notice and stops until enough new games
+    exist. Main variant: added to the shipped features; replacing the injury feature (which it
+    overlaps) is shown for reference.
+    """
+    from player_strength import FIRST_TEST_DATE
+    df = dataset(reports=load_injury_reports(), player_strength=True)
+    n_new = int((df['GAME_DATE'] >= pd.Timestamp(FIRST_TEST_DATE)).sum())
+    if n_new < min_test_games:
+        print(f"Only {n_new} games since {FIRST_TEST_DATE}; need {min_test_games} to score this experiment.")
+        return None
+    no_injury = [f for f in FEATURES if f != 'CORE_INJURY_DIFF']
+    return compare({'Shipped features': df,
+                    'Shipped + player strength (PLAYER_STRENGTH_DIFF)': (df, FEATURES + ['PLAYER_STRENGTH_DIFF']),
+                    'Player strength instead of the injury feature (reference)': (df, no_injury + ['PLAYER_STRENGTH_DIFF'])},
+                   f'Player strength (games from {FIRST_TEST_DATE} only)', test_from=FIRST_TEST_DATE)
 
 
 @experiment

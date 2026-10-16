@@ -1,7 +1,7 @@
 # NBA Outcome Predictor
 
-Predicts NBA game outcomes (home win probability and point spread) from Elo ratings, official
-injury reports, rolling team form, rest and travel, and compares each prediction with the Kalshi
+Predicts NBA game outcomes (home win probability and point spread) from Elo and opponent-adjusted
+power ratings, official injury reports, rolling team form, rest and travel, and compares each prediction with the Kalshi
 game and spread markets.
 Includes a Streamlit dashboard and a log of every live prediction with its track record.
 
@@ -15,9 +15,9 @@ also tuned inside each block on those training games. That gives 1,762 held-out 
 | Model | ROC-AUC | Accuracy | Log loss | Brier |
 |---|---|---|---|---|
 | Elo only (baseline) | 0.742 | 68.6% | 0.595 | 0.204 |
-| **All features, logistic regression (shipped)** | **0.758** | **70.4%** | **0.580** | **0.198** |
-| XGBoost, depth 2 (regularized) | 0.751 | 69.3% | 0.589 | 0.201 |
-| XGBoost, depth 5 (original) | 0.729 | 66.9% | 0.613 | 0.211 |
+| **All features, logistic regression (shipped)** | **0.763** | **70.7%** | **0.576** | **0.197** |
+| XGBoost, depth 2 (regularized) | 0.758 | 70.1% | 0.584 | 0.199 |
+| XGBoost, depth 5 (original) | 0.735 | 66.8% | 0.605 | 0.208 |
 
 **Against the market.** On the held-out 2025-26 games that had a Kalshi game market, the
 market's price at tip-off was more accurate than the model (lower log loss, higher AUC), and a
@@ -28,8 +28,8 @@ your machine: run `python src/market_odds.py --history` and `python src/train.py
 dashboard's Model page.
 
 **Calibration** (held-out): games predicted under 30% were won 18% of the time, and over 70%
-were won 79% (predicted 21% and 81%). In the middle the model is less sharp: games predicted at
-40-50% were won 40%, at 60-70% were won 74%.
+were won 79% (predicted 21% and 80%). In the middle the model is less sharp: games predicted at
+40-50% were won 43%, at 60-70% were won 75%.
 
 The official injury reports are the largest gain over Elo: on held-out games, home teams win 39%
 in the bottom fifth of the injury differential and 73% in the top fifth (55% overall).
@@ -48,7 +48,7 @@ win by about 4.5; "LAL +4.5" is the same game from the Lakers' side. Lines are r
 nearest 0.5. In the log and the CLI the home team's line is used, so a negative home line means
 the home team is favored.
 
-**Accuracy** (walk-forward, 1,762 held-out games): the predicted margin is off by **10.95
+**Accuracy** (walk-forward, 1,762 held-out games): the predicted margin is off by **10.91
 points** on average (RMSE 14.0). That is better than an Elo-only spread (11.28) and than always
 predicting the average home margin (13.08), in all four test periods. A typical NBA game still
 lands about 11 points from any pre-game prediction. The spread's uncertainty (about 14 points)
@@ -68,9 +68,12 @@ a toss-up and the dashboard says so.
   and wins in the last 5
 - Rest days and back-to-backs
 - Travel distance and time zones crossed since the previous game
+- **Power rating**: every team's strength fitted jointly from all earlier game margins (ridge
+  regression with home court, older games halving in weight every 60 days), so each result is
+  adjusted for the opponent; added in 2026-27 (RESULTS.md)
 
 Training and live predictions compute every feature with the same functions (`InjuryModel` in
-`injuries.py`, `add_context` in `context.py`, the shared Elo settings), and tests check that
+`injuries.py`, `add_context` in `context.py`, `power_rating.py`, the shared Elo settings), and tests check that
 live values equal the training values.
 
 ## Data Sources
@@ -89,6 +92,8 @@ src/
   ingest.py          # Incremental NBA data ingestion (retries, loud failures)
   injury_reports.py  # Official injury report download, parsing, name matching, archive
   elo.py             # Elo ratings, tuning grid, neutral-site handling
+  power_rating.py    # Opponent-adjusted power ratings from decayed game margins
+  rosters.py         # Daily snapshots of every team's roster (data/rosters/)
   injuries.py        # Rotation, absences and injury impact (training + live)
   features.py        # Team stats, rest and rolling form
   context.py         # Travel, time zones, schedule density, altitude, SOS-adjusted rating
@@ -172,7 +177,9 @@ the fetch fails, or when no new games arrive between November and March.
     probability a model trained only on earlier games gave, Kalshi's price at tip-off, the injury
     report, and the result. Useful in the offseason and for seeing how the model and market differ.
 - **Markets**: model vs Kalshi on every held-out game, and how the two did when they disagreed.
-- **Predictor**: any matchup today, with players listed Out pre-checked and adjustable.
+- **Predictor**: any matchup today, with players listed Out pre-checked and adjustable. A what-if
+  section lists players the model leaves out after 21+ missed games in a row (e.g. a season-long
+  injury); ticking one shows the prediction with him credited back, for reading only (never logged).
 - **Track Record**: accuracy, log loss and calibration of logged live predictions vs the market.
 - **Model**: walk-forward results, market comparison, calibration, ROC curve, feature weights.
 

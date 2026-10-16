@@ -352,10 +352,11 @@ def markets_card(games_today, selected_id, mode):
 def drivers_card(g):
     with st.container(key="card-drivers"):
         ui.card_title('What drives the model', f"toward {g['HOME_ABBR']} (right) or {g['AWAY_ABBR']} (left)")
-        if not g.get('FEATURES'):
+        c = dd.contributions(load_model(), g['FEATURES']) if g.get('FEATURES') else None
+        if c is None:
             ui.html_block('<div class="cv-muted">No feature row for this game.</div>')
             return
-        c = dd.contributions(load_model(), g['FEATURES']).head(7).iloc[::-1]
+        c = c.head(7).iloc[::-1]
         pts = c['contribution'] * 25  # slope of the logistic curve at 50%: approx. win-probability points
         colors = [ui.HOME_SIDE if v >= 0 else ui.AWAY_SIDE for v in pts]
         fig = go.Figure(go.Bar(
@@ -656,6 +657,24 @@ def page_predictor():
                                    value=p['PLAYER_NAME'] in listed, key=f"{side}_out_{team}_{i}"):
                         outs[side].append(p['PLAYER_NAME'])
 
+    # What-if: players back from a long absence. The model drops anyone out 21+ games in a row
+    # (e.g. a season-long injury), so it cannot know they are back; this shows the difference.
+    back = {'home': [], 'away': []}
+    absent = {side: predictor.long_absent(team) for side, team in [('home', home), ('away', away)]}
+    if any(len(a) for a in absent.values()):
+        with st.expander('What if: players back from a long absence (not in the model)'):
+            st.caption("The model leaves out players who missed 21+ games in a row. Tick only players you "
+                       "know are back on the team and playing. The result is a what-if for reading only: "
+                       "it is not the model's prediction and is never logged.")
+            wcols = st.columns(2, gap='medium')
+            for side, team, col in [('home', home, wcols[0]), ('away', away, wcols[1])]:
+                with col:
+                    for i, p in enumerate(absent[side].to_dict('records')):
+                        if st.checkbox(f"{p['PLAYER_NAME']} ({p['impact_score']:.1f}) · missed "
+                                       f"{p['games_missed']} games, last played {p['last_game']:%b %d, %Y}",
+                                       key=f"{side}_back_{team}_{i}"):
+                            back[side].append(p['PLAYER_NAME'])
+
     if st.button('Predict', type='primary', use_container_width=True):
         r = predictor.predict(home, away, outs['home'], outs['away'])
         if r['stale_warning']:
@@ -665,6 +684,13 @@ def page_predictor():
              'HOME_ABBR': abbr.get(home, home[:3]), 'AWAY_ABBR': abbr.get(away, away[:3]),
              'FEATURES': r['features'].iloc[0].to_dict()}
         probability_card(g)
+        if back['home'] or back['away']:
+            w = predictor.what_if_returning(r, back['home'], back['away'], home_team=home, away_team=away)
+            names = ', '.join(back['home'] + back['away'])
+            margin = '' if w['home_margin'] is None else (
+                f"; {g['HOME_ABBR']} margin {r['home_margin']:+.1f} -> {w['home_margin']:+.1f}")
+            st.info(f"What-if with {names} back: {g['HOME_ABBR']} {r['home_prob']:.0%} -> {w['home_prob']:.0%}"
+                    f"{margin}. Not the model's prediction; not logged.")
         drivers_card(g)
 
 
