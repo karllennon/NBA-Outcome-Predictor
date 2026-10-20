@@ -41,3 +41,6 @@ data/schedule_cache/
 
 # Scheduled run logs (local)
 logs/
+
+# Claude Code: personal settings stay local (launch.json is shared)
+.claude/settings.local.json
