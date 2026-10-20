@@ -83,3 +83,12 @@ def test_last_report_before_tip_ignores_later_reports():
     got = ir.last_report_before_tip(reports, '2026-03-03', 'Dallas Mavericks')
     # tip 19:30, cutoff 19:00 -> the 18:45 report; the 19:15 one is too late
     assert got['STATUS'].tolist() == ['Out']
+
+
+def test_describe_handles_an_empty_report():
+    import pandas as pd
+    from injury_reports import describe
+    assert 'no players' in describe(pd.DataFrame(columns=['REPORT_TIME', 'STATUS']))
+    df = pd.DataFrame({'REPORT_TIME': [pd.Timestamp('2026-10-20 17:30')] * 3, 'STATUS': ['Out', 'Out', 'Questionable']})
+    line = describe(df)
+    assert '3 rows' in line and 'Out 2' in line and 'Questionable 1' in line

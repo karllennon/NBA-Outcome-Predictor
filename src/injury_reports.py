@@ -351,6 +351,16 @@ def fetch_latest(as_of=None, session=None, max_hours=12, pause=0.25):
     return df
 
 
+def describe(df):
+    """One-line summary of a fetched report for the command line (also for an empty report: on days
+    without games the NBA publishes a report that lists no players)."""
+    if df is None or df.empty:
+        return "Latest injury report lists no players (no games that day?); archived."
+    t = df['REPORT_TIME'].iloc[0]
+    counts = ', '.join(f"{k} {v}" for k, v in df['STATUS'].value_counts().items())
+    return f"Report {t}: {len(df)} rows ({counts}) -> {archive_path(t)}"
+
+
 def load_latest_archived():
     """The newest archived report only (cheap; file names sort by report time)."""
     if not os.path.isdir(ARCHIVE_DIR):
@@ -545,5 +555,4 @@ if __name__ == "__main__":
         if df is None:
             print("No injury report found in the last 36 hours (offseason?).")
             sys.exit(0)
-        print(f"Report {df['REPORT_TIME'].iloc[0]}: {len(df)} rows -> {archive_path(df['REPORT_TIME'].iloc[0])}")
-        print(df['STATUS'].value_counts().to_string())
+        print(describe(df))
