@@ -56,6 +56,19 @@ def test_values_use_only_earlier_games():
     assert value == pytest.approx(1.0) and team == 'A'
 
 
+def test_replacement_level_uses_only_earlier_games(monkeypatch):
+    monkeypatch.setattr(ps, 'REPLACEMENT_MIN_PLAYERS', 1)
+    monkeypatch.setattr(ps, 'REPLACEMENT_MIN_MINUTES', 30)
+    monkeypatch.setattr(ps, 'REPLACEMENT_QUANTILE', 0.0)        # the lowest qualifying player
+    days = pd.date_range('2026-11-01', periods=3, freq='2D')
+    box = _box([('P', 'A', days[0], 30, 30), ('Q', 'A', days[1], 30, 15), ('R', 'A', days[2], 30, 3)])
+    games = pd.DataFrame({'TEAM_NAME': ['A'] * 3, 'GAME_DATE': days})
+    model = ps.PlayerStrength(box, games, injury_model=None)
+    assert model.replacement_on(days[0]) == ps.DEFAULT_REPLACEMENT   # nothing earlier
+    assert model.replacement_on(days[1]) == pytest.approx(1.0)       # only P's game
+    assert model.replacement_on(days[2]) == pytest.approx(0.5)       # Q's game, not R's same-day one
+
+
 def test_player_back_from_a_season_long_absence_counts_at_the_opener():
     class Reports:            # stand-in for InjuryModel: reports keyed by (team, date)
         def __init__(self, reports):

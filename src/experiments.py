@@ -413,9 +413,11 @@ def player_strength(min_test_games=200):
     if n_new < min_test_games:
         print(f"Only {n_new} games since {FIRST_TEST_DATE}; need {min_test_games} to score this experiment.")
         return None
-    no_injury = [f for f in FEATURES if f != 'CORE_INJURY_DIFF']
-    return compare({'Shipped features': df,
-                    'Shipped + player strength (PLAYER_STRENGTH_DIFF)': (df, FEATURES + ['PLAYER_STRENGTH_DIFF']),
+    # Shipped 2026-10-21 (FEATURES includes it), so the baseline is the model without it
+    before = [f for f in FEATURES if f != 'PLAYER_STRENGTH_DIFF']
+    no_injury = [f for f in before if f != 'CORE_INJURY_DIFF']
+    return compare({'Without player strength': (df, before),
+                    'Shipped: with player strength (PLAYER_STRENGTH_DIFF)': (df, FEATURES),
                     'Player strength instead of the injury feature (reference)': (df, no_injury + ['PLAYER_STRENGTH_DIFF'])},
                    f'Player strength (games from {FIRST_TEST_DATE} only)', test_from=FIRST_TEST_DATE)
 

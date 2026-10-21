@@ -7,6 +7,7 @@ FEATURES = [
     'DEF_RATING_DIFF', 'CORE_INJURY_DIFF',
     'TRAVEL_DIFF', 'TZ_SHIFT_DIFF',   # Phase 6: the only new feature group that helped
     'RATING_DIFF',                    # 2026-27: opponent-adjusted power rating (power_rating.py)
+    'PLAYER_STRENGTH_DIFF',           # 2026-27: player-based team strength (player_strength.py)
 ]
 
 # Home-minus-away differentials built from each side's pre-game state

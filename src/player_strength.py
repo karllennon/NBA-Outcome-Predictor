@@ -36,6 +36,9 @@ from injuries import impact_score
 PARAMS = {'half_life': 120, 'prior_minutes': 3000, 'decay': 'days'}  # tune_params, games before 2026-10-20
 GAP_CAP_DAYS = 30
 REPLACEMENT_QUANTILE = 0.2      # replacement level: 20th percentile of per-minute value (300+ minutes)
+REPLACEMENT_MIN_MINUTES = 300
+REPLACEMENT_MIN_PLAYERS = 30    # fewer qualifying players than this (start of the data): use the default
+DEFAULT_REPLACEMENT = 0.5
 MINUTES_GAMES = 10
 RECENT_TEAM_GAMES = 10
 REPORT_LOOKBACK_DAYS = 30
@@ -62,6 +65,27 @@ def allocate_minutes(usual, total=TEAM_MINUTES):
     return out
 
 
+def replacement_by_date(p):
+    """
+    (dates, values): after each game date's games, the REPLACEMENT_QUANTILE of per-minute value
+    among players with REPLACEMENT_MIN_MINUTES+ minutes so far. A game uses the value from the
+    last date before it, so the replacement level never sees the game itself or anything later.
+    p: player box scores with GAME_DATE, PLAYER_NAME, IMPACT and MIN.
+    """
+    codes, _ = pd.factorize(p['PLAYER_NAME'])
+    impact, minutes = np.zeros(codes.max() + 1), np.zeros(codes.max() + 1)
+    dates, values = [], []
+    for day, idx in p.groupby('GAME_DATE').indices.items():
+        np.add.at(impact, codes[idx], p['IMPACT'].values[idx])
+        np.add.at(minutes, codes[idx], p['MIN'].values[idx])
+        ok = minutes >= REPLACEMENT_MIN_MINUTES
+        dates.append(np.datetime64(day))
+        values.append(float(np.quantile(impact[ok] / minutes[ok], REPLACEMENT_QUANTILE))
+                      if ok.sum() >= REPLACEMENT_MIN_PLAYERS else DEFAULT_REPLACEMENT)
+    order = np.argsort(dates)
+    return np.array(dates)[order], np.array(values)[order]
+
+
 class PlayerStrength:
     def __init__(self, player_boxscores, team_games, injury_model=None, half_life=None, prior_minutes=None,
                  replacement=None, decay=None, rosters=None):
@@ -84,12 +108,9 @@ class PlayerStrength:
         self.rosters = rosters                      # rosters.Rosters, or None
         self.id_to_name = (dict(zip(p['PLAYER_ID'], p['PLAYER_NAME'])) if 'PLAYER_ID' in p else {})
         self.team_ids = (dict(zip(tg['TEAM_NAME'], tg['TEAM_ID'])) if 'TEAM_ID' in tg else {})
+        self.replacement = replacement              # a fixed value (tests), or None: from earlier games
         if replacement is None:
-            # one constant from games before the test season (per-minute value of players with 300+ minutes)
-            early = p[p['GAME_DATE'] < pd.Timestamp(FIRST_TEST_DATE)].groupby('PLAYER_NAME')[['IMPACT', 'MIN']].sum()
-            early = early[early['MIN'] >= 300]
-            replacement = float((early['IMPACT'] / early['MIN']).quantile(REPLACEMENT_QUANTILE)) if len(early) else 0.5
-        self.replacement = replacement
+            self._rep_dates, self._rep_values = replacement_by_date(p)
 
     # ------------------------------------------------------------ players
     def player(self, name, as_of):
@@ -102,8 +123,16 @@ class PlayerStrength:
         if n == 0:
             return None
         w = 0.5 ** (self._age(dates[:n], as_of) / self.half_life)
-        value = (np.sum(w * impact[:n]) + self.prior_minutes * self.replacement) / (np.sum(w * minutes[:n]) + self.prior_minutes)
+        rep = self.replacement_on(as_of)
+        value = (np.sum(w * impact[:n]) + self.prior_minutes * rep) / (np.sum(w * minutes[:n]) + self.prior_minutes)
         return value, float(minutes[max(0, n - MINUTES_GAMES):n].mean()), teams[n - 1]
+
+    def replacement_on(self, as_of):
+        """Replacement-level value per minute from games strictly before `as_of`."""
+        if self.replacement is not None:
+            return self.replacement
+        k = np.searchsorted(self._rep_dates, np.datetime64(pd.Timestamp(as_of))) - 1
+        return float(self._rep_values[k]) if k >= 0 else DEFAULT_REPLACEMENT
 
     def _age(self, dates, as_of):
         """How old each of a player's games is, in the units of `decay` (days or games)."""
@@ -148,7 +177,7 @@ class PlayerStrength:
                 for pid in ids:
                     name = self.id_to_name.get(pid)
                     info = self.player(name, as_of) if name else None
-                    out[name or f'PLAYER_ID {pid}'] = info[:2] if info else (self.replacement, 0.0)
+                    out[name or f'PLAYER_ID {pid}'] = info[:2] if info else (self.replacement_on(as_of), 0.0)
                 return out
         dates = self.team_dates.get(team_name)
         if dates is None:

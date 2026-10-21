@@ -584,7 +584,7 @@ None changes held-out log loss by more than 0.0001; the existing rest, back-to-b
 features already capture what these add. Not kept (the candidate columns stay in
 `create_matchup_data` as extras, unused by the model).
 
-### Player-based team strength (built; to be tested on 2026-27 games only)
+### Player-based team strength (kept, 2026-10-21)
 
 After nine experiments on the same 1,762 held-out games, those games are no longer used for new
 tests (repeated testing on one set makes a chance pass more likely). This candidate is built now
@@ -642,3 +642,22 @@ matched to box scores by player id: offseason signings and trades count for thei
 players who left are dropped. Players on a roster with no NBA games get replacement value and no
 expected minutes. Every 2026-27 game the experiment scores will have a pre-game snapshot. The
 dashboard's what-if list also keeps only players on the team's current roster.
+
+**Shipped 2026-10-21, before the planned 2026-27 test.** Scored on the standard 1,763 held-out
+games (2025-26), which were already used for nine experiments and fall inside the period the
+settings above were tuned on, so the gain is likely somewhat optimistic:
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Without player strength | 0.7638 | 70.56% | 0.5757 | 0.1963 |
+| **With player strength (shipped)** | **0.7660** | 69.71% | **0.5709** | **0.1948** |
+| Player strength instead of the injury feature | 0.7638 | 69.09% | 0.5723 | 0.1955 |
+
+Log loss -0.0048 (SE 0.0021), better in 4 of 4 folds. `PLAYER_STRENGTH_DIFF` is in `FEATURES`,
+`data_pipeline.PLAYER_STRENGTH` builds it for training, and `inference.py` computes it live from the
+game day's roster snapshot and the latest injury report. The replacement level used to be one
+constant from all games before 2026-10-20, which leaked later seasons into older rows
+(`test_full_feature_set_has_no_leakage` failed); it is now taken from games before each game date
+only, with the same result above. `python src/experiments.py player_strength` still runs the clean
+2026-27-only comparison (with vs without) once 200 games exist; if it does not hold up there, set
+`PLAYER_STRENGTH = False`, drop the feature from `FEATURES` and retrain.

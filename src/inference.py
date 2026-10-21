@@ -37,13 +37,17 @@ class GamePredictor:
         players.columns = players.columns.str.strip()
         self.team_games = team_games
         self._init_power_ratings(team_games)
-        # Roster snapshots (rosters.py), only for the what-if view's list of returning players
+        # Roster snapshots (rosters.py): player strength candidates and the what-if view's list
         from rosters import Rosters
         self.rosters = Rosters()
         self.player_ids = dict(zip(players['PLAYER_NAME'], players['PLAYER_ID']))
         # Same settings as the training pipeline, so the injury feature means the same thing
         params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
         self.injuries = InjuryModel(players, team_games, **params)
+        # Player-based team strength, built as in training; it reads the live injury report
+        # through self.injuries once load_injury_report() has run
+        from player_strength import PlayerStrength
+        self.strength = PlayerStrength(players, team_games, self.injuries, rosters=self.rosters)
         self.report, self.report_error = None, None
         try:
             trades = pd.read_csv(f'{data_dir}/recent_trades.csv')
@@ -218,6 +222,12 @@ class GamePredictor:
         h_loss, h_details, h_skipped = self._injury_loss(home_team, home_rot, home_out)
         a_loss, a_details, a_skipped = self._injury_loss(away_team, away_rot, away_out)
 
+        # Player strength takes the report's full Out list (as in training), or the manual override
+        h_strength, h_lineup = self.strength.team_strength(home_team, game_date,
+                                                           out=None if 'home' in sources else home_out)
+        a_strength, a_lineup = self.strength.team_strength(away_team, game_date,
+                                                           out=None if 'away' in sources else away_out)
+
         h_ctx, a_ctx = self._context(home_team, away_team, game_date)
         features = pd.DataFrame([{
             'ELO_DIFF': home['ELO'] - away['ELO'],
@@ -235,6 +245,7 @@ class GamePredictor:
             'TRAVEL_DIFF': h_ctx['TRAVEL_KM'] - a_ctx['TRAVEL_KM'],
             'TZ_SHIFT_DIFF': h_ctx['TZ_SHIFT'] - a_ctx['TZ_SHIFT'],
             'RATING_DIFF': self.power_rating_diff(home_team, away_team, game_date),
+            'PLAYER_STRENGTH_DIFF': (h_strength - a_strength) / 10,
         }])[FEATURES]
 
         stale_days = min(home['DAYS_SINCE_LAST_GAME'], away['DAYS_SINCE_LAST_GAME'])
@@ -247,6 +258,8 @@ class GamePredictor:
             'injury_diff': float(features['CORE_INJURY_DIFF'].iloc[0]),
             'home_rotation': home_rot, 'away_rotation': away_rot,
             'home_details': h_details, 'away_details': a_details,
+            'home_strength': h_strength, 'away_strength': a_strength,
+            'home_lineup': h_lineup, 'away_lineup': a_lineup,       # players counted in the strength
             'skipped': h_skipped + a_skipped,
             'home_out': list(home_out), 'away_out': list(away_out), 'out_sources': sources,
             'stale_warning': (f"Latest data is {stale_days} days old; rolling stats may not reflect "
