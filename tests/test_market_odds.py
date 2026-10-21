@@ -81,3 +81,15 @@ def test_build_tip_prices_fetches_only_new_games_that_have_tipped(monkeypatch, t
     assert asked == [('KXNBAGAME-26NOV03BKNCHA-CHA', False)]
     assert set(out['GAME_ID']) == {'0022600001', '0022600002'}
     assert out.set_index('GAME_ID').loc['0022600002', 'TIP_HOME_MID'] == 0.61
+
+
+def test_candles_in_kalshis_new_format_are_read(monkeypatch):
+    # October 2026: candle prices arrive as 'close_dollars' instead of 'close'
+    assert mo.candle_close({'yes_bid': {'close_dollars': '0.6100'}}, 'yes_bid') == 0.61
+    assert mo.candle_close({'yes_bid': {'close': '0.60'}}, 'yes_bid') == 0.60
+    assert math.isnan(mo.candle_close({}, 'yes_ask'))
+    tip = pd.Timestamp('2026-10-20 19:00').tz_localize('America/New_York')
+    end = int(tip.timestamp())
+    monkeypatch.setattr(mo, '_get', lambda path, params=None: {'candlesticks': [
+        {'end_period_ts': end, 'yes_bid': {'close_dollars': '0.6100'}, 'yes_ask': {'close_dollars': '0.6200'}}]})
+    assert mo.pregame_quote('X', tip, False) == (0.61, 0.62)

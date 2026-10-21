@@ -88,6 +88,13 @@ def _dollars(x):
         return float('nan')
 
 
+def candle_close(candle, side):
+    """Closing price of `side` ('yes_bid' / 'yes_ask') in a candlestick, in dollars. Kalshi renamed
+    the field from 'close' to 'close_dollars' (seen October 2026); both are accepted."""
+    c = candle.get(side) or {}
+    return _dollars(c.get('close_dollars', c.get('close')))
+
+
 def midpoint(bid, ask):
     """Midpoint of a two-sided quote; NaN for an empty or very wide book."""
     if not (0 <= bid <= ask <= 1) or ask == 0 or ask - bid > MAX_SPREAD:
@@ -191,7 +198,7 @@ def _last_quote(data, end):
     """(bid, ask) closing the last candlestick that ends at or before `end` with a valid quote."""
     candles = [c for c in (data or {}).get('candlesticks', []) if c['end_period_ts'] <= end]
     for c in reversed(candles):
-        bid, ask = _dollars((c.get('yes_bid') or {}).get('close')), _dollars((c.get('yes_ask') or {}).get('close'))
+        bid, ask = candle_close(c, 'yes_bid'), candle_close(c, 'yes_ask')
         if 0 <= bid < ask <= 1:
             return bid, ask
     return float('nan'), float('nan')
