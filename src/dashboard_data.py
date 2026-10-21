@@ -226,8 +226,7 @@ def market_trend_replay(event_ticker, home_abbr, tip_time_et, hours=30):
             or mo._get(f'/series/{mo.SERIES}/markets/{ticker}/candlesticks', params) or {})
     rows = []
     for c in data.get('candlesticks', []):
-        bid = mo._dollars((c.get('yes_bid') or {}).get('close'))
-        ask = mo._dollars((c.get('yes_ask') or {}).get('close'))
+        bid, ask = mo.candle_close(c, 'yes_bid'), mo.candle_close(c, 'yes_ask')
         mid = mo.midpoint(bid, ask)
         if not np.isnan(mid):
             t = pd.Timestamp(c['end_period_ts'], unit='s', tz='UTC').tz_convert('America/New_York')
