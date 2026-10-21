@@ -376,11 +376,152 @@ def model_comparison(entry, margins):
     return pd.DataFrame(rows)
 
 
-def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_path=TIP_PRICES_PATH):
+# ---------------------------------------------------------------- misses
+
+FEATURE_LABELS = {'ELO_DIFF': 'Elo', 'EFG_DIFF': 'shooting (eFG%)', 'TOV_PCT_DIFF': 'turnovers',
+                  'ORB_PCT_DIFF': 'off. rebounding', 'FT_RATE_DIFF': 'free throws', 'WIN_STREAK_DIFF': 'win streak',
+                  'REST_DIFF': 'rest', 'B2B_DIFF': 'back-to-back', 'PLUS_MINUS_DIFF': 'recent +/-',
+                  'PACE_DIFF': 'pace', 'DEF_RATING_DIFF': 'defense', 'CORE_INJURY_DIFF': 'injuries',
+                  'TRAVEL_DIFF': 'travel', 'TZ_SHIFT_DIFF': 'time zones', 'RATING_DIFF': 'power rating'}
+CLOSE_GAME_PTS = 5           # lost by this many points or fewer: a coin flip at the end
+COIN_FLIP_P = 0.55           # picks the model gave under this probability
+BIG_GAP_PTS = 10             # model minus market, in percentage points, for the side taken
+CLV_AGAINST_C = 3            # the market moved this many cents away from our side during the day
+REGULAR_MINUTES = 20         # "regular": averaged this many minutes over his last REGULAR_GAMES games
+REGULAR_GAMES = 10
+
+
+def drivers(inputs, model, home_side, top=3):
+    """
+    The `top` inputs that pushed the model hardest toward the side it picked: each feature's
+    share of the logit (standardized value x weight), signed toward the pick. `inputs` is the
+    log's INPUTS JSON; `model` a fitted StandardScaler + LogisticRegression pipeline.
+    """
+    import json
+    x = pd.Series(json.loads(inputs) if isinstance(inputs, str) else inputs, dtype=float)
+    scaler, logit = model.named_steps['standardscaler'], model.named_steps['logisticregression']
+    names = list(getattr(scaler, 'feature_names_in_', x.index))
+    contrib = (x.reindex(names).fillna(0).values - scaler.mean_) / scaler.scale_ * logit.coef_[0]
+    contrib = pd.Series(contrib if home_side else -contrib, index=names)
+    return contrib.reindex(contrib.abs().sort_values(ascending=False).index[:top])
+
+
+def _names(cell):
+    return [] if not isinstance(cell, str) or not cell else [n.strip() for n in cell.split(';') if n.strip()]
+
+
+def surprise_absences(box, game_id, team_name, game_date, listed_out, rosters=None, team_id=None):
+    """
+    Regulars (REGULAR_MINUTES+ over their last REGULAR_GAMES games, any team) who belonged to the
+    team but did not play and were not listed Out at entry: late scratches the model could not
+    have known about. Team membership is the roster snapshot for the date when one exists, else
+    the team of each player's latest game. None when the game's box score is not in yet.
+    """
+    game = box[box['GAME_ID'] == game_id]
+    if game.empty:
+        return None
+    played = set(game.loc[game['TEAM_NAME'] == team_name, 'PLAYER_NAME'])
+    before = box[box['GAME_DATE'] < pd.Timestamp(game_date)].sort_values('GAME_DATE')
+    recent = before.groupby('PLAYER_NAME').tail(REGULAR_GAMES).groupby('PLAYER_NAME')
+    avg, team, pid = recent['MIN'].mean(), recent['TEAM_NAME'].last(), recent['PLAYER_ID'].last()
+    ids = rosters.on(team_id, game_date) if rosters is not None and team_id is not None else None
+    members = pid.index[pid.isin(ids)] if ids is not None else team.index[team == team_name]
+    regulars = [n for n in members if avg.get(n, 0) >= REGULAR_MINUTES]
+    out = set(listed_out)
+    return sorted(n for n in regulars if n not in played and n not in out)
+
+
+def listed_out(report_day, team_name, game_date, as_of):
+    """
+    Players listed Out or Doubtful for the team's game on the last report published by `as_of`
+    (naive Eastern), or None without one. Unlike the log's HOME_OUT / AWAY_OUT, this keeps players
+    new to the team, whom the injury feature drops (it only knows last season's rotations).
+    """
+    if report_day is None or report_day.empty or as_of is None:
+        return None
+    r = report_day[(report_day['TEAM_NAME'] == team_name)
+                   & (pd.to_datetime(report_day['GAME_DATE']) == pd.Timestamp(game_date).normalize())
+                   & (report_day['REPORT_TIME'] <= pd.Timestamp(as_of))]
+    if r.empty:
+        return None
+    r = r[r['REPORT_TIME'] == r['REPORT_TIME'].max()]
+    return sorted(r.loc[r['STATUS'].isin(['Out', 'Doubtful']), 'PLAYER'])
+
+
+def misses(view, margins, legs_df, model, box=None, rosters=None, team_ids=None, reports=None):
+    """
+    One row per finished game the model's pick lost: what drove the pick, who was out at entry,
+    surprise absences on the picked team, the day's market move, and the possible causes.
+    reports: function game_date -> that day's archived injury reports (injury_reports.load_archive_day).
+    """
+    rows = []
+    clv = legs_df[legs_df['strategy'] == 'S4'].set_index('GAME_ID')['clv_day'] if len(legs_df) else pd.Series(dtype=float)
+    for r in view.to_dict('records'):
+        margin, side = margins.get(r['GAME_ID']), r.get('PICK_SIDE')
+        if margin is None or margin != margin or margin == 0 or not isinstance(side, str) or not side:
+            continue
+        home_side = side == 'YES'
+        lost_by = -margin if home_side else margin
+        if lost_by < 0:
+            continue                                   # the pick won
+        team_name = r.get('HOME_TEAM') if home_side else r.get('AWAY_TEAM')
+        listed = listed_out(reports(r['GAME_DATE']) if reports is not None else None, team_name,
+                            r['GAME_DATE'], r.get('LOGGED_ET'))
+        if listed is None:
+            listed = _names(r.get('HOME_OUT') if home_side else r.get('AWAY_OUT'))
+        gap = (r['PICK_P'] - r['PICK_MID']) * 100
+        day_clv = clv.get(r['GAME_ID'])
+        top = drivers(r['INPUTS'], model, home_side) if model is not None and isinstance(r.get('INPUTS'), str) else None
+        surprise = None
+        if box is not None:
+            surprise = surprise_absences(box, r['GAME_ID'], team_name, r['GAME_DATE'], listed, rosters,
+                                         (team_ids or {}).get(team_name))
+        causes = []
+        if surprise:
+            causes.append('surprise absence')
+        if day_clv is not None and day_clv == day_clv and day_clv <= -CLV_AGAINST_C:
+            causes.append('market moved against the pick')
+        if lost_by <= CLOSE_GAME_PTS:
+            causes.append('close game')
+        if r['PICK_P'] < COIN_FLIP_P:
+            causes.append('coin-flip pick')
+        if gap >= BIG_GAP_PTS:
+            causes.append('model far from market')
+        rows.append({'date': pd.Timestamp(r['GAME_DATE']).strftime('%m-%d'),
+                     'game': f"{r.get('AWAY_ABBR')} @ {r.get('HOME_ABBR')}", 'pick': r.get('PICK_TEAM'),
+                     'model p': r['PICK_P'], 'market': r['PICK_MID'], 'lost by': lost_by,
+                     'drove the pick': ', '.join(f'{FEATURE_LABELS.get(k, k)} {v:+.2f}' for k, v in top.items())
+                     if top is not None else '-',
+                     'out at entry': ', '.join(listed) or '-',
+                     'surprise absences': '-' if surprise is None else (', '.join(surprise) or 'none'),
+                     'day CLV c': day_clv, 'possible causes': ', '.join(causes) or 'no obvious cause'})
+    return pd.DataFrame(rows, columns=['date', 'game', 'pick', 'model p', 'market', 'lost by', 'drove the pick',
+                                       'out at entry', 'surprise absences', 'day CLV c', 'possible causes'])
+
+
+def _miss_inputs(judged, box_path='data/raw_player_boxscores.csv'):
+    """The judged model, recent box scores, roster snapshots and team IDs for the misses section."""
+    import joblib
+    from frozen_model import FROZEN_DIR, MODEL_PATH
+    from rosters import Rosters
+    from injury_reports import load_archive_day
+    model = joblib.load(os.path.join(FROZEN_DIR, 'nba_model.joblib') if judged == 'frozen' else MODEL_PATH)
+    box = pd.read_csv(box_path, usecols=['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ID', 'TEAM_NAME', 'GAME_ID', 'GAME_DATE', 'MIN'],
+                      dtype={'GAME_ID': str}, parse_dates=['GAME_DATE'])
+    box['GAME_ID'] = box['GAME_ID'].str.zfill(10)
+    box = box[box['GAME_DATE'] >= pd.Timestamp(SEASON_START) - pd.Timedelta(days=400)]
+    team_ids = dict(zip(box['TEAM_NAME'], box['TEAM_ID']))
+    return {'model': model, 'box': box, 'rosters': Rosters(), 'team_ids': team_ids, 'reports': load_archive_day}
+
+
+def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_path=TIP_PRICES_PATH,
+          miss_inputs=None):
     """
     All report tables (no file output): coverage, per-model strategy tables ('live' and, once the
-    model is frozen, 'frozen'), the live/frozen/market comparison, and which model the plan's
-    decision rules are judged on ('frozen' when it exists).
+    model is frozen, 'frozen'), the live/frozen/market comparison, which model the plan's
+    decision rules are judged on ('frozen' when it exists), and that model's misses
+    (miss_inputs: a function judged -> {'model', 'box', 'rosters', 'team_ids'}, e.g. _miss_inputs;
+    without it the misses table has no drivers or surprise absences).
     """
     log = pl.load() if log is None else log
     if log is None or log.empty:
@@ -400,8 +541,16 @@ def build(log=None, games_path='data/raw_nba_data.csv', since=SEASON_START, tip_
                      'CLV source': 'Kalshi price at tip-off (data/tip_prices.csv); last pre-tip-off logged price '
                      'where missing' if tips is not None
                      else 'last pre-tip-off logged price (run: python src/market_odds.py --tip-prices)'})
+    judged = 'frozen' if 'frozen' in models else 'live'
+    extra = {'model': None}
+    if miss_inputs is not None:
+        try:
+            extra = miss_inputs(judged)
+        except Exception as e:                 # the rest of the report still matters more
+            print(f'[!] misses: no drivers or absences ({type(e).__name__}: {e})')
+    miss = misses(model_view(entry, judged), margins, models[judged]['legs'], **extra)
     return {'coverage': coverage, 'models': models, 'comparison': model_comparison(entry, margins),
-            'judged_on': 'frozen' if 'frozen' in models else 'live'}
+            'judged_on': judged, 'misses': miss}
 
 
 def _md(df, fmt):
@@ -412,7 +561,7 @@ def _md(df, fmt):
     return '\n'.join(lines)
 
 
-PCT = {'win rate', 'hit rate', 'PrizePicks SE', 'SE', 'live accuracy', 'frozen accuracy'}
+PCT = {'win rate', 'hit rate', 'PrizePicks SE', 'SE', 'live accuracy', 'frozen accuracy', 'model p', 'market'}
 SIGNED_PCT = {'Kalshi return/$', 'PrizePicks return/$', 'return/$'}
 FORMATS = {'avg price': '{:.3f}', 'avg multiplier': '{:.2f}x', 'Kalshi c/contract': '{:+.1f}',
            'day CLV c': '{:+.2f}', 'entry CLV c': '{:+.2f}', 'Kalshi SE': '{:.1f}', 'day CLV SE': '{:.2f}',
@@ -451,6 +600,22 @@ def report(tables, since=SEASON_START):
     comp = tables['comparison']
     lines += ['', '## Live vs frozen model vs market (same finished games; lower log loss is better)', '',
               _md(comp, _fmt) if len(comp) else 'No finished games with both models logged yet.', '']
+    miss = tables.get('misses')
+    if miss is not None:
+        lines += [f'## Misses ({judged} model: games its pick lost)', '',
+                  "'drove the pick': the inputs that pushed the model hardest toward its pick (share of the "
+                  "logit, + = toward the pick). 'out at entry': Out or Doubtful on the picked team in the last "
+                  "injury report before entry. 'surprise absences': regulars on the picked team who did not "
+                  f"play and were not listed Out at entry. Causes: surprise absence; market moved against the "
+                  f"pick (day CLV <= -{CLV_AGAINST_C}c); close game (lost by {CLOSE_GAME_PTS} or fewer); "
+                  f"coin-flip pick (under {COIN_FLIP_P:.0%}); model far from market ({BIG_GAP_PTS}+ points). "
+                  'Single games are mostly noise: use this for ideas at the monthly review, not daily changes.', '']
+        if len(miss):
+            counts = pd.Series([c for cs in miss['possible causes'] for c in cs.split(', ')]).value_counts()
+            lines += ['Causes across all misses: ' + ', '.join(f'{c} {n}' for c, n in counts.items()), '',
+                      _md(miss, _fmt), '']
+        else:
+            lines += ['No misses yet.', '']
     for m, t in tables['models'].items():
         name = m.capitalize()
         lines += [f'## {name} model: single bets', '',
@@ -475,7 +640,7 @@ def main(argv=None):
     ap.add_argument('--out', default=REPORT_PATH)
     args = ap.parse_args(argv)
     log = pl.load(args.log)
-    tables = build(log, args.games, args.since)
+    tables = build(log, args.games, args.since, miss_inputs=_miss_inputs)
     text = report(tables, args.since)
     with open(args.out, 'w', encoding='utf-8') as f:
         f.write(text)

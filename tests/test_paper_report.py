@@ -118,3 +118,41 @@ def test_day_clv_runs_from_the_first_price_of_the_day_to_tip_off(tmp_path):
     assert leg['clv'] == pytest.approx(5.0)                            # 50c -> 55c
     assert leg['clv_day'] == pytest.approx(10.0)                       # 45c -> 55c
     assert leg['clv_day_hours'] == pytest.approx(8.0)
+
+
+def _two_feature_model():
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+    X = pd.DataFrame({'RATING_DIFF': [-2.0, -1.0, 1.0, 2.0], 'CORE_INJURY_DIFF': [1.0, -1.0, 1.0, -1.0]})
+    return make_pipeline(StandardScaler(), LogisticRegression()).fit(X, [0, 0, 1, 1])
+
+
+def test_drivers_are_signed_toward_the_pick():
+    model = _two_feature_model()
+    home = R.drivers({'RATING_DIFF': 2.0, 'CORE_INJURY_DIFF': 0.0}, model, home_side=True, top=1)
+    away = R.drivers({'RATING_DIFF': 2.0, 'CORE_INJURY_DIFF': 0.0}, model, home_side=False, top=1)
+    assert home.index[0] == 'RATING_DIFF' and home.iloc[0] > 0 and away.iloc[0] == -home.iloc[0]
+
+
+def test_misses_list_lost_picks_with_report_outs_and_surprise_absences():
+    import json
+    log = pd.DataFrame([_log_row('0022600001', '2026-10-21 19:00', 40, 0.70, 0.55, 0.57),    # CHA pick, lost by 3
+                        _log_row('0022600002', '2026-10-21 19:30', 40, 0.70, 0.55, 0.57)])   # CHA pick, won
+    log['HOME_TEAM'], log['AWAY_TEAM'] = 'Charlotte Hornets', 'Brooklyn Nets'
+    log['INPUTS'] = json.dumps({'RATING_DIFF': 2.0, 'CORE_INJURY_DIFF': 0.0})
+    entry, _ = R.entries(log, since='2026-10-20')
+    box = pd.DataFrame({'PLAYER_ID': [1, 2, 3, 1, 2, 3, 2], 'TEAM_NAME': 'Charlotte Hornets', 'MIN': 30.0,
+                        'PLAYER_NAME': ['Starter', 'Listed', 'Scratch', 'Starter', 'Listed', 'Scratch', 'Starter'],
+                        'GAME_ID': ['0'] * 6 + ['0022600001'],
+                        'GAME_DATE': pd.to_datetime(['2026-10-10'] * 3 + ['2026-10-12'] * 3 + ['2026-10-21'])})
+    box.loc[6, 'PLAYER_ID'], box.loc[6, 'PLAYER_NAME'] = 1, 'Starter'
+    report = pd.DataFrame({'REPORT_TIME': pd.to_datetime(['2026-10-21 17:30']), 'GAME_DATE': pd.to_datetime(['2026-10-21']),
+                           'TEAM_NAME': ['Charlotte Hornets'], 'PLAYER': ['Listed'], 'STATUS': ['Out']})
+    m = R.misses(entry, {'0022600001': -3, '0022600002': 8}, pd.DataFrame(columns=['strategy']),
+                 _two_feature_model(), box=box, reports=lambda d: report)
+    assert len(m) == 1
+    row = m.iloc[0]
+    assert row['lost by'] == 3 and row['out at entry'] == 'Listed' and row['surprise absences'] == 'Scratch'
+    assert row['drove the pick'].startswith('power rating +')
+    assert 'surprise absence' in row['possible causes'] and 'close game' in row['possible causes']
