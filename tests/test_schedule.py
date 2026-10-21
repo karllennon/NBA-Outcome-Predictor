@@ -31,8 +31,11 @@ def test_scoreboard_retries_error_pages_then_succeeds(monkeypatch):
 def test_scoreboard_gives_up_after_the_last_attempt(monkeypatch):
     fake, calls = _fake_scoreboard(failures=99)
     monkeypatch.setattr(scoreboardv2, 'ScoreboardV2', fake)
+
+    def v3_down(d):
+        raise ValueError('also down')
     with pytest.raises(ValueError):
-        schedule._game_header('2026-10-21', sleep=lambda s: None)
+        schedule._game_header('2026-10-21', sleep=lambda s: None, sources=(schedule._v2_header, v3_down))
     assert calls['n'] == schedule.RETRIES
 
 
@@ -86,3 +89,22 @@ def test_prefetch_reports_a_failed_date_and_never_caches_stale_data(monkeypatch,
     monkeypatch.setattr(schedule, '_game_header', down)
     # the cache exists, but a prefetch must report the outage rather than return the cached copy
     assert schedule.prefetch(1, start='2026-10-21', cache_dir=cache) == {'2026-10-21': 'failed (ValueError)'}
+
+
+def test_scoreboard_falls_back_to_v3_when_v2_keeps_failing():
+    calls = []
+
+    def v2(d):
+        calls.append('v2')
+        raise json.JSONDecodeError('Expecting value', '', 0)
+
+    def v3(d):
+        calls.append('v3')
+        return pd.DataFrame({'GAME_ID': ['1']})
+    out = schedule._game_header('2026-10-21', sleep=lambda s: None, sources=(v2, v3))
+    assert list(out['GAME_ID']) == ['1'] and calls == ['v2'] * schedule.RETRIES + ['v3']
+
+    def v3_down(d):
+        raise ValueError('also down')
+    with pytest.raises(ValueError):
+        schedule._game_header('2026-10-21', sleep=lambda s: None, sources=(v2, v3_down))

@@ -24,19 +24,49 @@ ET = 'America/New_York'
 COLUMNS = ['GAME_ID', 'GAME_DATE', 'HOME_TEAM', 'AWAY_TEAM', 'STATUS', 'TIP_TIME_ET']
 
 
-def _game_header(date_str, retries=RETRIES, delay=RETRY_DELAY, sleep=time.sleep):
-    """ScoreboardV2 game header for a date, retrying failed or non-JSON responses."""
-    import requests
+def _v2_header(date_str):
     from nba_api.stats.endpoints import scoreboardv2
+    return scoreboardv2.ScoreboardV2(game_date=date_str, timeout=30).game_header.get_data_frame()
+
+
+def _v3_header(date_str):
+    """
+    The same columns from ScoreboardV3, a separate endpoint that kept working on mornings when
+    ScoreboardV2 returned error pages (2026-10-20 and 10-21). Home and away come from the game
+    code ('20261021/ATLORL' = Atlanta at Orlando).
+    """
+    from nba_api.stats.endpoints import scoreboardv3
+    dfs = scoreboardv3.ScoreboardV3(game_date=date_str, timeout=30).get_data_frames()
+    games, teams = dfs[1], dfs[2]
+    ids = {(g, t): i for g, t, i in zip(teams['gameId'], teams['teamTricode'], teams['teamId'])}
+    code = games['gameCode'].str.split('/').str[-1]
+    return pd.DataFrame({
+        'GAME_ID': games['gameId'],
+        'HOME_TEAM_ID': [ids.get((g, c[3:])) for g, c in zip(games['gameId'], code)],
+        'VISITOR_TEAM_ID': [ids.get((g, c[:3])) for g, c in zip(games['gameId'], code)],
+        'GAME_STATUS_ID': games['gameStatus'],
+        'GAME_STATUS_TEXT': games['gameStatusText'],
+    })
+
+
+def _game_header(date_str, retries=RETRIES, delay=RETRY_DELAY, sleep=time.sleep, sources=None):
+    """
+    Game header for a date: ScoreboardV2, retrying failed or non-JSON responses, then ScoreboardV3
+    if V2 keeps failing. Raises only if both fail.
+    """
+    import requests
+    v2, v3 = sources or (_v2_header, _v3_header)
     for attempt in range(retries):
         try:
-            return scoreboardv2.ScoreboardV2(game_date=date_str, timeout=30).game_header.get_data_frame()
+            return v2(date_str)
         except (ValueError, requests.RequestException) as e:     # JSONDecodeError is a ValueError
             if attempt == retries - 1:
-                raise
+                print(f"[!] NBA scoreboard (V2) failed {retries} times ({type(e).__name__}); trying ScoreboardV3")
+                break
             wait = delay * 2 ** attempt
             print(f"[!] NBA scoreboard attempt {attempt + 1} failed ({type(e).__name__}); retrying in {wait}s")
             sleep(wait)
+    return v3(date_str)
 
 
 def parse_status_tip(game_date, status_text):
