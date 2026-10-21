@@ -16,6 +16,10 @@ ELO_PARAMS = {'k_factor': 12.5, 'home_advantage': 50, 'season_carryover': 0.5}
 # Official injury reports: players listed Out on the last report before tip-off (falls back
 # to "missed the previous game" when no report covers the game). See RESULTS.md, Phase 2.
 INJURY_PARAMS = {"use_reports": True}
+# Player-based team strength from rosters, box scores and injury reports (player_strength.py).
+# Shipped 2026-10-21 on the 2025-26 held-out games (log loss -0.0048, SE 0.0021, 4/4 folds);
+# the planned 2026-27-only test (experiments.py player_strength) still runs at 200 games.
+PLAYER_STRENGTH = True
 
 
 def load_games(data_dir='data', first_season_id=None):
@@ -42,7 +46,7 @@ def load_injury_reports():
 
 
 def build_dataset(raw_game_df, player_boxscores, elo_params=None,
-                  injury_params=None, reports=None, verbose=True, darko=None, player_strength=False):
+                  injury_params=None, reports=None, verbose=True, darko=None, player_strength=None):
     """
     Returns (matchup training set, feature processor, Elo calculator).
     Every feature for a game uses only games before it.
@@ -50,6 +54,7 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     log = print if verbose else (lambda *a, **k: None)
     elo_params = ELO_PARAMS if elo_params is None else elo_params
     injury_params = INJURY_PARAMS if injury_params is None else injury_params
+    player_strength = PLAYER_STRENGTH if player_strength is None else player_strength
 
     # Elo ratings (pre-game for features, post-game for live predictions)
     log("Calculating Elo...")
@@ -60,7 +65,7 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     injury_model = InjuryModel(player_boxscores, raw_game_df,
                                reports=reports, darko=darko, **injury_params)
     df_with_injuries = injury_model.backfill(df_with_elo, verbose=verbose)
-    if player_strength:     # 2026-27 experiment (player_strength.py), not a shipped feature
+    if player_strength:     # PLAYER_STRENGTH_DIFF (player_strength.py)
         from player_strength import PlayerStrength
         from rosters import Rosters
         log("Backfilling player-based team strength...")

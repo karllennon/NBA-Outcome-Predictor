@@ -27,6 +27,7 @@ FEATURE_LABELS = {
     'TRAVEL_DIFF': 'Travel distance', 'TZ_SHIFT_DIFF': 'Time zones crossed', 'EFG_DIFF': 'Shooting (eFG%)',
     'TOV_PCT_DIFF': 'Turnovers', 'ORB_PCT_DIFF': 'Offensive rebounding', 'FT_RATE_DIFF': 'Free-throw rate',
     'PACE_DIFF': 'Pace', 'DEF_RATING_DIFF': 'Defense (pts allowed /100)', 'RATING_DIFF': 'Power rating',
+    'PLAYER_STRENGTH_DIFF': 'Player strength (roster)',
 }
 
 
