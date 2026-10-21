@@ -6,6 +6,11 @@ from nba_api.stats.endpoints import scoreboardv2
 import schedule
 
 
+@pytest.fixture(autouse=True)
+def v2_up(monkeypatch):
+    monkeypatch.setattr(schedule, '_v2_down', False)
+
+
 def _fake_scoreboard(failures):
     """ScoreboardV2 stand-in that raises a JSON error for the first `failures` calls."""
     calls = {'n': 0}
@@ -108,3 +113,18 @@ def test_scoreboard_falls_back_to_v3_when_v2_keeps_failing():
         raise ValueError('also down')
     with pytest.raises(ValueError):
         schedule._game_header('2026-10-21', sleep=lambda s: None, sources=(v2, v3_down))
+
+
+def test_scoreboard_skips_v2_for_the_rest_of_the_run_once_it_has_failed():
+    calls = []
+
+    def v2(d):
+        calls.append('v2')
+        raise json.JSONDecodeError('Expecting value', '', 0)
+
+    def v3(d):
+        calls.append('v3')
+        return pd.DataFrame({'GAME_ID': ['1']})
+    schedule._game_header('2026-10-21', sleep=lambda s: None, sources=(v2, v3))
+    schedule._game_header('2026-10-21', sleep=lambda s: None, sources=(v2, v3))
+    assert calls == ['v2'] * schedule.RETRIES + ['v3', 'v3']

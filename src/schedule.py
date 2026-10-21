@@ -22,6 +22,7 @@ RETRY_DELAY = 10       # seconds before the 2nd attempt, doubling after that
 CACHE_DIR = 'data/schedule_cache'
 ET = 'America/New_York'
 COLUMNS = ['GAME_ID', 'GAME_DATE', 'HOME_TEAM', 'AWAY_TEAM', 'STATUS', 'TIP_TIME_ET']
+_v2_down = False       # set once V2 has failed every retry, so later lookups in this run go straight to V3
 
 
 def _v2_header(date_str):
@@ -52,16 +53,19 @@ def _v3_header(date_str):
 def _game_header(date_str, retries=RETRIES, delay=RETRY_DELAY, sleep=time.sleep, sources=None):
     """
     Game header for a date: ScoreboardV2, retrying failed or non-JSON responses, then ScoreboardV3
-    if V2 keeps failing. Raises only if both fail.
+    if V2 keeps failing. Raises only if both fail. After V2 has failed every retry once, later
+    calls in the same process skip it (a slate run looks the schedule up more than once).
     """
+    global _v2_down
     import requests
     v2, v3 = sources or (_v2_header, _v3_header)
-    for attempt in range(retries):
+    for attempt in range(0 if _v2_down else retries):
         try:
             return v2(date_str)
         except (ValueError, requests.RequestException) as e:     # JSONDecodeError is a ValueError
             if attempt == retries - 1:
                 print(f"[!] NBA scoreboard (V2) failed {retries} times ({type(e).__name__}); trying ScoreboardV3")
+                _v2_down = True
                 break
             wait = delay * 2 ** attempt
             print(f"[!] NBA scoreboard attempt {attempt + 1} failed ({type(e).__name__}); retrying in {wait}s")
