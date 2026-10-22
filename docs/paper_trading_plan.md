@@ -60,11 +60,20 @@ Rules for changing the live model:
 1. A change ships only if it passes the existing walk-forward rule (lower held-out log loss than
    the model it replaces, recorded in RESULTS.md), measured on games before the change date.
 2. Changes are made only at monthly review points (about the 15th of each month), not day to
-   day, so results are not chased.
+   day, so results are not chased. Exception, decided 2026-10-22: during the first week of the
+   season (through 2026-10-26) the live model may change on any day, so early problems can be
+   fixed quickly. Every change goes in the change log below. The frozen model never changes, so
+   the decision rules above (judged on it) are unaffected.
 3. Live results from this season are never used to pick the strategy cutoffs above.
 4. At each review, compare the live and frozen models on the same games played since the last
    change: log loss and each strategy's P&L. A change that helps on past data but trails the
    frozen model live is noted, not reverted mid-month.
+
+Live-model change log (each change: date, what, how it was tested):
+
+| Date | Change | Evidence |
+|---|---|---|
+| 2026-10-21 | Player-based team strength (PLAYER_STRENGTH_DIFF) added to the live model's features; first retrained into the live model by the 2026-10-22 refresh | Walk-forward on the 2025-26 held-out games (log loss -0.0048, SE 0.0021, 4/4 folds), against the earlier plan to score it only on 2026-27 games; shipped outside a monthly review. Training rows before 2026-10-14 use the box-score rule for who is on a team (no roster snapshots exist), live predictions use the game day's roster, so the measured gain describes the box-score version. To be re-checked on 2026-27 games at the 2026-11-15 review. |
 
 What one season can and cannot show: with no edge at all, a strategy still ends a season ahead
 about half the time, and even a real edge of a few cents per dollar often ends behind. So the
