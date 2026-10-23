@@ -74,6 +74,7 @@ Live-model change log (each change: date, what, how it was tested):
 | Date | Change | Evidence |
 |---|---|---|
 | 2026-10-21 | Player-based team strength (PLAYER_STRENGTH_DIFF) added to the live model's features; first retrained into the live model by the 2026-10-22 refresh | Walk-forward on the 2025-26 held-out games (log loss -0.0048, SE 0.0021, 4/4 folds), against the earlier plan to score it only on 2026-27 games; shipped outside a monthly review. Training rows before 2026-10-14 use the box-score rule for who is on a team (no roster snapshots exist), live predictions use the game day's roster, so the measured gain describes the box-score version. To be re-checked on 2026-27 games at the 2026-11-15 review. |
+| 2026-10-23 | Roster-aware power rating (pull ratings toward a roster-based prior): tested, **not shipped** | Start of 2024-25 (training data): model log loss +0.0022 (SE 0.0019) in the early season, +0.0007 later; no 2024 roster snapshots, so a weak test. Re-test on 2026-27 games at the 2026-11-15 review. |
 
 What one season can and cannot show: with no edge at all, a strategy still ends a season ahead
 about half the time, and even a real edge of a few cents per dollar often ends behind. So the
