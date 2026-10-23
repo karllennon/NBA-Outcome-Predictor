@@ -425,3 +425,218 @@ P(margin > line) against how often the margin actually cleared it:
 Close to calibrated: predictions with about a 60% chance of covering covered about 61% of the
 time. Below 30% the model is a little too generous to the underdog side (predicted 26.9%,
 actual 24.6%). The rows share games, so they are not independent.
+
+## Model improvements for the 2026-27 season
+
+Candidates are tested with the same walk-forward protocol (1,762 held-out games, Elo re-tuned
+per fold) and kept only if held-out log loss improves.
+
+### Regularization strength (not kept)
+
+The logistic regression's C = 0.1 had never been tuned, and the model's predictions are cautious
+at the extremes. `python src/experiments.py regularization`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 0.5947 | | |
+| **Shipped: C = 0.1** | **0.7579** | **0.5795** | | |
+| C = 0.03 (fixed) | 0.7579 | 0.5800 | +0.0005 (0.0006) | 2/4 |
+| C = 0.3 / 1 / 10 (fixed) | 0.7577-0.7573 | 0.5796-0.5798 | +0.0001 to +0.0003 | 1-2/4 |
+| C = 0.01 / 0.003 (fixed) | 0.7564 / 0.7524 | 0.5826 / 0.5904 | +0.0031 / +0.0109 | 2/4, 0/4 |
+| C tuned per fold (last 20% of training games) | 0.7572 | 0.5803 | +0.0008 (0.0006) | 1/4 |
+| C = 0.1 + recalibration fitted per fold | 0.7525 | 0.5865 | +0.0070 (0.0016) | 0/4 |
+
+Log loss is flat for C from 0.03 up, so the shipped value is already in the best range; the
+per-fold choice (0.03, 0.3, 0.03, 0.03) adds noise. A Platt-style recalibration on the most
+recent training games hurt in every fold (fitted slopes 0.87-1.21, intercepts -0.21 to +0.04 move
+around from fold to fold). The model's caution at the extremes is therefore not a shrinkage
+setting but missing information; nothing was changed.
+
+### Returning players (not kept)
+
+The injury feature subtracts players who are out but never credits players coming back, while
+the team's rolling form (last 10 games) was built without them; players absent 21+ games are not
+in the rotation at all. `InjuryModel.returning` finds players back today from an injury absence:
+latest team is this one, missed 3+ of its games in a row, listed Out on the last report before the
+team's previous game, not listed Out on today's. Each is valued at his impact score times the share
+of the last 10 team games he missed; RETURN_DIFF = (home - away) / 10. The largest 2025-26 cases are
+the expected ones (Jokic after 16 games, Wembanyama 12, Embiid 13, Tatum 63).
+`python src/experiments.py returning_players`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 0.5947 | | |
+| **Shipped features** | **0.7579** | **0.5795** | | |
+| + RETURN_DIFF (48% of games) | 0.7576 | 0.5803 | +0.0008 (0.0007) | 1/4 |
+| + RETURN_DIFF, impact >= 20 only (14% of games; second try) | 0.7575 | 0.5803 | +0.0008 (0.0007) | 1/4 |
+
+Neither version helps, including the one limited to rotation-level players, which was chosen after
+seeing the first result. Elo and the rolling form appear to recover quickly enough once a player is
+back. The code stays, switched off by default (`returning=False`), so the shipped features are
+unchanged.
+
+### Power ratings (kept)
+
+`src/power_rating.py` fits every team's strength jointly from earlier game margins before each
+game day: home margin = home court + rating(home) - rating(away), by ridge regression with each
+game's weight halving every `half_life` days and a penalty `lam` shrinking ratings toward zero.
+Unlike Elo, each refit adjusts every team for the strength of all the opponents it played.
+RATING_DIFF = home minus away rating. The half-life (15, 30, 60, 120 days) and penalty (1, 5, 20)
+are chosen inside each fold by the rating's own margin error on that fold's training games, like
+the Elo settings; every fold chose 60 days and 5, which are the shipped `power_rating.PARAMS`, so
+the walk-forward results with the fixed settings are identical. On its own the rating predicts
+margins about as well as Elo (held-out MAE 11.35 vs 11.28). `python src/experiments.py power_ratings`:
+
+| Model | ROC-AUC | Accuracy | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|---|
+| Elo only (logistic) | 0.7421 | 68.56% | 0.5947 | | |
+| Before: no power rating | 0.7579 | 70.43% | 0.5795 | | |
+| **+ RATING_DIFF (kept)** | **0.7629** | **70.66%** | **0.5763** | **-0.0032 (0.0015)** | **3/4** |
+| Power rating instead of Elo (reference) | 0.7636 | 71.06% | 0.5760 | -0.0036 (0.0019) | 3/4 |
+
+Kept: the largest gain since the injury reports, better in 3 of 4 folds. It is added rather than
+replacing Elo (the pre-specified variant; the two score about the same). The spread model uses the
+same features and improves too: held-out MAE 10.95 -> 10.91 points (-0.046, SE 0.025, 3 of 4
+folds better), still better than the Elo-only spread in all four folds. In the refit model the
+power rating has the largest weight (+0.64 per standard deviation; Elo +0.20, injuries +0.37).
+Live predictions compute the rating with `power_rating.ratings_as_of` on the same games, and a test
+checks that it equals the training value.
+
+Shipped model after this change, walk-forward on 1,762 held-out games: **ROC-AUC 0.7629, accuracy
+70.66%, log loss 0.5763, Brier 0.1966**; spread MAE 10.91 points.
+
+### Power rating variants (not kept)
+
+Two changes to the shipped rating, each replacing RATING_DIFF, with every setting chosen inside
+each fold on its training games. `python src/experiments.py power_rating_variants`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| **Shipped: rating on raw margins** | **0.7629** | **0.5763** | | |
+| Blowout cap (margins clipped to 15 / 20 / 25 / none) | 0.7628 | 0.5765 | +0.0002 (0.0007) | 1/4 |
+| Margin per 100 possessions | 0.7632 | 0.5761 | -0.0002 (0.0002) | 3/4 |
+
+The cap is not kept: every fold chose the loosest cap (25 points), so garbage time is not
+distorting the rating. Per-possession margins are 0.0002 lower, about one standard error, and were
+the better of the two variants tried; a gain that small is within noise and not worth changing the
+shipped feature for, so it is not kept either. The options stay in `power_rating.pregame_ratings`
+(`target`, `cap`) to re-test with more data.
+
+### Back-to-backs (not kept)
+
+The shipped model has one symmetric back-to-back feature (B2B_DIFF, second night of a
+back-to-back, home minus away; 17.6% of games have a home and 18.5% an away back-to-back). Three
+refinements were fixed in advance and each tested on its own. `python src/experiments.py back_to_backs`:
+
+| Model | ROC-AUC | Log loss | Change (SE) | Folds better |
+|---|---|---|---|---|
+| **Shipped features** | **0.7629** | **0.5763** | | |
+| A: home and away back-to-backs as separate features | 0.7630 | 0.5762 | -0.0001 (0.0005) | 3/4 |
+| B: + back-to-back x km travelled since the previous game | 0.7627 | 0.5764 | +0.0001 (0.0002) | 2/4 |
+| C: + back-to-back against an opponent with 2+ days of rest | 0.7629 | 0.5763 | +0.0000 (0.0000) | 3/4 |
+
+None changes held-out log loss by more than 0.0001; the existing rest, back-to-back and travel
+features already capture what these add. Not kept (the candidate columns stay in
+`create_matchup_data` as extras, unused by the model).
+
+### Player-based team strength (kept, 2026-10-21)
+
+After nine experiments on the same 1,762 held-out games, those games are no longer used for new
+tests (repeated testing on one set makes a chance pass more likely). This candidate is built now
+and will be scored only on 2026-27 games: `python src/experiments.py player_strength` reports
+nothing until 200 games from 2026-10-20 exist.
+
+`src/player_strength.py` builds a team's strength for a game from the players expected to play:
+each player's box-score impact per minute (recent games weighted more, shrunk toward a
+replacement-level value), times his minutes, with the game's 240 minutes given to the available
+players in order of their usual minutes. Available = latest team is this one, played in one of its
+last 10 games or appeared on its injury report in the last 30 days, and not listed Out on the last
+report before tip-off. Trades, injuries and returns change the strength immediately, unlike Elo or
+the power rating. PLAYER_STRENGTH_DIFF = (home - away) / 10; not a shipped feature.
+
+Settings, chosen by how well the strength difference predicts home margins on games before
+2026-10-20 only (training data for the 2026-27 test; mean squared error, points^2):
+
+| Half-life (days) | Shrinkage 100 min | 300 | 1,000 | 3,000 | 10,000 |
+|---|---|---|---|---|---|
+| 60 | 221.72 | 219.44 | 218.04 | | |
+| 120 | 220.56 | 218.33 | 216.16 | **215.50** | 215.60 |
+| 240 | 220.97 | 219.01 | 216.71 | 215.68 | 215.68 |
+
+The first grid chose its edge (1,000 minutes), so it was widened; the chosen 120 days and 3,000
+minutes (about a season of a starter's minutes) are `player_strength.PARAMS`. The heavy shrinkage
+compresses differences between players (Denver on 2026-02-01: 155.3, or 148.6 without Jokic); the
+model's weight on the feature rescales it. Late-season contenders that rest starters (e.g. Oklahoma
+City with eight players listed Out on 2026-04-10) drop accordingly.
+
+Two changes before any test, prompted by Tyrese Haliburton (out all of 2025-26, back for 2026-27):
+- **Availability:** a player on the team's injury report for its previous game now counts as a
+  candidate even if that game was months ago, so a player returning from a season-long absence is
+  included at the season opener (a test covers it). Before, the offseason meant no recent games
+  or reports, and he was left out.
+- **How old games fade:** calendar decay rates a player who has not played for a long time close to
+  replacement level. Two alternatives were tuned the same way, on games before 2026-10-20:
+
+| Decay of a player's past games | Best setting | Mean squared error |
+|---|---|---|
+| **Calendar days (kept)** | 120 days, 3,000 minutes | **215.50** |
+| Calendar days, each break between his games capped at 30 days | 120 days, 10,000 minutes | 216.65 |
+| His own games played | 80 games, 3,000 minutes | 218.42 |
+
+  Calendar decay fits the typical game best (it also reflects aging and changing roles), so it
+  stays; the cost is that a star back from a season-long absence starts near replacement value
+  until he plays again. The dashboard's Predictor page has a what-if view for that case.
+
+**Rosters (added before any test).** `src/rosters.py` saves every team's roster from stats.nba.com
+each morning (`data/rosters/YYYY-MM-DD.csv`, from 2026-10-14). The NBA serves only today's roster,
+so rosters are used only for games on or after a snapshot and never to rebuild older seasons,
+where they would reveal moves that had not happened yet. When a snapshot from the game day (or up
+to 3 days before) exists, the player strength's candidates for a team are its roster that day,
+matched to box scores by player id: offseason signings and trades count for their new team at once
+(e.g. Kelly Oubre Jr. and Larry Nance Jr. for Indiana in 2026-27, instead of their old teams), and
+players who left are dropped. Players on a roster with no NBA games get replacement value and no
+expected minutes. Every 2026-27 game the experiment scores will have a pre-game snapshot. The
+dashboard's what-if list also keeps only players on the team's current roster.
+
+
+**Shipped 2026-10-21, before the planned 2026-27 test.** Scored on the standard 1,763 held-out
+games (2025-26), which were already used for nine experiments and fall inside the period the
+settings above were tuned on, so the gain is likely somewhat optimistic:
+
+| Model | ROC-AUC | Accuracy | Log loss | Brier |
+|---|---|---|---|---|
+| Without player strength | 0.7638 | 70.56% | 0.5757 | 0.1963 |
+| **With player strength (shipped)** | **0.7660** | 69.71% | **0.5709** | **0.1948** |
+| Player strength instead of the injury feature | 0.7638 | 69.09% | 0.5723 | 0.1955 |
+
+Log loss -0.0048 (SE 0.0021), better in 4 of 4 folds. `PLAYER_STRENGTH_DIFF` is in `FEATURES`,
+`data_pipeline.PLAYER_STRENGTH` builds it for training, and `inference.py` computes it live from the
+game day's roster snapshot and the latest injury report. The replacement level used to be one
+constant from all games before 2026-10-20, which leaked later seasons into older rows
+(`test_full_feature_set_has_no_leakage` failed); it is now taken from games before each game date
+only, with the same result above. `python src/experiments.py player_strength` still runs the clean
+2026-27-only comparison (with vs without) once 200 games exist; if it does not hold up there, set
+`PLAYER_STRENGTH = False`, drop the feature from `FEATURES` and retrain.
+
+### Roster-aware power rating (not kept)
+
+Prompted by Toronto at Washington on 2026-10-23: Washington's offseason added Anthony Davis,
+Deandre Ayton and Khris Middleton, yet the power rating still mostly reflected last season's
+games by a much weaker roster, and it was the model's largest input for that game. The variant pulls each team's rating
+toward a prior from its current full-strength player strength (`power_rating.roster_priors`,
+scaled to rating points by a slope fit on earlier games) instead of toward the league average;
+the prior dominates when a team has few recent games and fades as results accumulate. Tested
+on the start of the 2024-25 season, which is training data rather than the overused held-out
+games, with the prior scale (1.54 points per strength unit) and the model fit only on earlier
+games. `python src/experiments.py roster_prior`:
+
+| Window | Games | Rating MSE change (SE) | Log loss shipped | With prior | Change (SE) |
+|---|---|---|---|---|---|
+| 2024-10-22 to 11-30 | 292 | +1.9 (2.0) | 0.6163 | 0.6184 | +0.0022 (0.0019) |
+| 2024-12-01 to 2025-01-28 | 391 | -2.3 (1.4) | 0.5948 | 0.5955 | +0.0007 (0.0010) |
+
+Not kept: slightly worse in the early season it was meant to help. The test is weak in one
+respect: there are no roster snapshots for 2024, so player strength learned of an offseason move
+only once the player had appeared for his new team, which is the case this was built for. It will
+be re-tested on 2026-27 games, which all have pre-game roster snapshots, at the 2026-11-15
+review. The option stays in `pregame_ratings` / `ratings_as_of` (`priors`), off by default.

@@ -5,12 +5,14 @@ computed the same way as the training features.
 """
 from datetime import date
 import joblib
+import numpy as np
 import pandas as pd
 from context import add_context, upcoming_rows
 from data_pipeline import INJURY_PARAMS, ELO_PARAMS, load_raw
 from elo import NBAEloCalculator
 from injuries import InjuryModel
 from matchups import FEATURES, injury_diff
+import power_rating
 
 OFFSEASON_GAP_DAYS = 90       # longer gap than this means a new season has started
 _ELO = NBAEloCalculator(**ELO_PARAMS)
@@ -34,15 +36,93 @@ class GamePredictor:
         team_games, players = load_raw(data_dir)
         players.columns = players.columns.str.strip()
         self.team_games = team_games
+        self._init_power_ratings(team_games)
+        # Roster snapshots (rosters.py): player strength candidates and the what-if view's list
+        from rosters import Rosters
+        self.rosters = Rosters()
+        self.player_ids = dict(zip(players['PLAYER_NAME'], players['PLAYER_ID']))
         # Same settings as the training pipeline, so the injury feature means the same thing
         params = {k: v for k, v in INJURY_PARAMS.items() if k != 'use_reports'}
         self.injuries = InjuryModel(players, team_games, **params)
+        # Player-based team strength, built as in training; it reads the live injury report
+        # through self.injuries once load_injury_report() has run
+        from player_strength import PlayerStrength
+        self.strength = PlayerStrength(players, team_games, self.injuries, rosters=self.rosters)
         self.report, self.report_error = None, None
         try:
             trades = pd.read_csv(f'{data_dir}/recent_trades.csv')
             self.trades = dict(zip(trades['PLAYER_NAME'], trades['NEW_TEAM']))
         except (FileNotFoundError, KeyError):
             self.trades = {}
+
+    def _init_power_ratings(self, team_games):
+        """Game pairs and team ids for the power rating (same games as training)."""
+        self.power_games = power_rating.pair_games(team_games)
+        latest = team_games.sort_values('GAME_DATE')
+        self.team_ids = dict(zip(latest['TEAM_NAME'], latest['TEAM_ID']))
+        self._ratings = {}
+
+    def power_rating_diff(self, home_team, away_team, game_date):
+        """RATING_DIFF for a game: home minus away power rating fitted on games before its date."""
+        day = pd.Timestamp(game_date).normalize()
+        if day not in self._ratings:
+            self._ratings[day] = power_rating.ratings_as_of(self.power_games, day, **power_rating.PARAMS)[0]
+        r = self._ratings[day]
+        return r.get(self.team_ids.get(home_team), 0.0) - r.get(self.team_ids.get(away_team), 0.0)
+
+    def long_absent(self, team_name, game_date=None, min_impact=10.0, max_days_away=600):
+        """
+        Players the model leaves out of the team entirely because they have missed more than
+        CHRONIC_MAX games in a row (e.g. a season-long injury), whose latest team is this one and,
+        when a roster snapshot covers the date, who are on the team's roster: DataFrame
+        PLAYER_NAME, impact_score (his last 15 games), games_missed, last_game. Only for the
+        dashboard's what-if view; the model itself never uses this list.
+        """
+        from injuries import CHRONIC_MAX, RECENT_GAMES
+        as_of = np.datetime64(pd.Timestamp(game_date or date.today()))
+        rosters = getattr(self, 'rosters', None)
+        on_roster = rosters.on(self.team_ids.get(team_name), pd.Timestamp(as_of)) if rosters is not None else None
+        dates = self.injuries.team_dates.get(team_name)
+        rows = []
+        if dates is not None:
+            before = dates[dates < as_of][::-1]
+            for player in self.injuries.team_players.get(team_name, []):
+                p_dates, p_teams, p_impact = self.injuries.player_logs[player]
+                n = np.searchsorted(p_dates, as_of)
+                if n == 0 or p_teams[n - 1] != team_name:
+                    continue
+                last = p_dates[n - 1]
+                if (as_of - last) / np.timedelta64(1, 'D') > max_days_away:
+                    continue
+                missed = int(np.sum(before > last))
+                impact = float(p_impact[max(0, n - RECENT_GAMES):n].mean())
+                if on_roster is not None and self.player_ids.get(player) not in on_roster:
+                    continue           # no longer on the team (released, traded, retired)
+                if missed > CHRONIC_MAX and impact >= min_impact:
+                    rows.append((player, impact, missed, pd.Timestamp(last).date()))
+        out = pd.DataFrame(rows, columns=['PLAYER_NAME', 'impact_score', 'games_missed', 'last_game'])
+        return out.sort_values('impact_score', ascending=False).reset_index(drop=True)
+
+    def what_if_returning(self, result, home_back=(), away_back=(), game_date=None, home_team=None,
+                          away_team=None):
+        """
+        What the model would say if players it leaves out (long_absent) were credited as back:
+        each one's impact counted like the reverse of an absence in CORE_INJURY_DIFF. Returns
+        {'home_prob', 'home_margin', 'credit'}. A what-if for reading only: never logged and not
+        the model's prediction.
+        """
+        impact = {}
+        for team in (home_team, away_team):
+            if team is not None:
+                la = self.long_absent(team, game_date)
+                impact.update(dict(zip(la['PLAYER_NAME'], la['impact_score'])))
+        home_credit = sum(impact.get(p, 0.0) for p in home_back)
+        away_credit = sum(impact.get(p, 0.0) for p in away_back)
+        f = result['features'].copy()
+        f['CORE_INJURY_DIFF'] = f['CORE_INJURY_DIFF'] + injury_diff(-home_credit, -away_credit)
+        margin = float(self.spread.predict(f)[0]) if self.spread is not None else None
+        return {'home_prob': float(self.model.predict_proba(f)[0][1]), 'home_margin': margin,
+                'credit': (home_credit, away_credit)}
 
     def load_injury_report(self, fetch=True):
         """Latest official injury report (downloaded and archived, or the newest archived one)."""
@@ -142,6 +222,12 @@ class GamePredictor:
         h_loss, h_details, h_skipped = self._injury_loss(home_team, home_rot, home_out)
         a_loss, a_details, a_skipped = self._injury_loss(away_team, away_rot, away_out)
 
+        # Player strength takes the report's full Out list (as in training), or the manual override
+        h_strength, h_lineup = self.strength.team_strength(home_team, game_date,
+                                                           out=None if 'home' in sources else home_out)
+        a_strength, a_lineup = self.strength.team_strength(away_team, game_date,
+                                                           out=None if 'away' in sources else away_out)
+
         h_ctx, a_ctx = self._context(home_team, away_team, game_date)
         features = pd.DataFrame([{
             'ELO_DIFF': home['ELO'] - away['ELO'],
@@ -158,6 +244,8 @@ class GamePredictor:
             'CORE_INJURY_DIFF': injury_diff(h_loss, a_loss),
             'TRAVEL_DIFF': h_ctx['TRAVEL_KM'] - a_ctx['TRAVEL_KM'],
             'TZ_SHIFT_DIFF': h_ctx['TZ_SHIFT'] - a_ctx['TZ_SHIFT'],
+            'RATING_DIFF': self.power_rating_diff(home_team, away_team, game_date),
+            'PLAYER_STRENGTH_DIFF': (h_strength - a_strength) / 10,
         }])[FEATURES]
 
         stale_days = min(home['DAYS_SINCE_LAST_GAME'], away['DAYS_SINCE_LAST_GAME'])
@@ -170,6 +258,8 @@ class GamePredictor:
             'injury_diff': float(features['CORE_INJURY_DIFF'].iloc[0]),
             'home_rotation': home_rot, 'away_rotation': away_rot,
             'home_details': h_details, 'away_details': a_details,
+            'home_strength': h_strength, 'away_strength': a_strength,
+            'home_lineup': h_lineup, 'away_lineup': a_lineup,       # players counted in the strength
             'skipped': h_skipped + a_skipped,
             'home_out': list(home_out), 'away_out': list(away_out), 'out_sources': sources,
             'stale_warning': (f"Latest data is {stale_days} days old; rolling stats may not reflect "

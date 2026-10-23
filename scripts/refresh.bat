@@ -15,6 +15,8 @@ echo === Refresh started %DATE% %TIME% ===
 "%PY%" -u src\train.py || goto :fail
 REM Archive the latest injury report and today's Kalshi prices (non-fatal: offseason or outage)
 "%PY%" -u src\injury_reports.py || echo [!] injury report fetch failed
+REM Snapshot every team's current roster (the NBA serves only today's; data\rosters\)
+"%PY%" -u src\rosters.py || echo [!] roster snapshot failed
 REM Log today's pre-tip-off predictions with Kalshi prices (also appends a market snapshot)
 "%PY%" -u src\daily_slate.py || echo [!] slate / prediction log failed
 echo === Refresh finished %DATE% %TIME% ===

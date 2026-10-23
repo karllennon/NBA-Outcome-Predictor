@@ -6,6 +6,8 @@ FEATURES = [
     'B2B_DIFF', 'PLUS_MINUS_DIFF', 'PACE_DIFF',
     'DEF_RATING_DIFF', 'CORE_INJURY_DIFF',
     'TRAVEL_DIFF', 'TZ_SHIFT_DIFF',   # Phase 6: the only new feature group that helped
+    'RATING_DIFF',                    # 2026-27: opponent-adjusted power rating (power_rating.py)
+    'PLAYER_STRENGTH_DIFF',           # 2026-27: player-based team strength (player_strength.py)
 ]
 
 # Home-minus-away differentials built from each side's pre-game state
@@ -20,6 +22,7 @@ DIFF_SOURCES = {
     'PLUS_MINUS_DIFF': 'ROLLING_PLUS_MINUS',
     'PACE_DIFF': 'ROLLING_PACE',
     'DEF_RATING_DIFF': 'ROLLING_DEF_RATING',
+    'RATING_DIFF': 'POWER_RATING',
 }
 
 
@@ -63,6 +66,19 @@ def create_matchup_data(processed_df):
         matchups['DARKO_INJURY_DIFF'] = injury_diff(matchups['DARKO_INJURY_LOSS_HOME'],
                                                     matchups['DARKO_INJURY_LOSS_AWAY'])
         extra.append('DARKO_INJURY_DIFF')
+    if 'TRAVEL_KM_HOME' in matchups:             # 2026-27 experiment: back-to-back candidates
+        h, a = matchups['IS_B2B_HOME'], matchups['IS_B2B_AWAY']
+        matchups['HOME_B2B'], matchups['AWAY_B2B'] = h, a
+        matchups['B2B_TRAVEL_DIFF'] = (h * matchups['TRAVEL_KM_HOME'] - a * matchups['TRAVEL_KM_AWAY']) / 1000
+        rested_h, rested_a = (matchups['DAYS_REST_HOME'] >= 2), (matchups['DAYS_REST_AWAY'] >= 2)
+        matchups['B2B_VS_RESTED_DIFF'] = (h * rested_a).astype(int) - (a * rested_h).astype(int)
+        extra += ['HOME_B2B', 'AWAY_B2B', 'B2B_TRAVEL_DIFF', 'B2B_VS_RESTED_DIFF']
+    if 'PLAYER_STRENGTH_HOME' in matchups:      # 2026-27 experiment: player-based team strength
+        matchups['PLAYER_STRENGTH_DIFF'] = (matchups['PLAYER_STRENGTH_HOME'] - matchups['PLAYER_STRENGTH_AWAY']) / 10
+        extra.append('PLAYER_STRENGTH_DIFF')
+    if 'RETURN_GAIN_HOME' in matchups:          # 2026-27 experiment: players back from injury
+        matchups['RETURN_DIFF'] = (matchups['RETURN_GAIN_HOME'] - matchups['RETURN_GAIN_AWAY']) / 10
+        extra.append('RETURN_DIFF')
     if 'AT_ALTITUDE_AWAY' in matchups:
         matchups['AWAY_AT_ALTITUDE'] = matchups['AT_ALTITUDE_AWAY']
         extra.append('AWAY_AT_ALTITUDE')

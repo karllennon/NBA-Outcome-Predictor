@@ -1,9 +1,11 @@
+import numpy as np
 import pandas as pd
 from context import add_context, CONTEXT_COLUMNS
 from elo import NBAEloCalculator, is_neutral_site
 from features import NBAFeatureProcessor
 from injuries import InjuryModel
 from matchups import create_matchup_data
+from power_rating import PARAMS as POWER_RATING_PARAMS, pair_games, pregame_ratings
 
 # Settings for the shipped pipeline. experiments.py overrides these to test alternatives.
 # First season used for training (SEASON_ID 2YYYY = regular season starting in YYYY).
@@ -14,6 +16,10 @@ ELO_PARAMS = {'k_factor': 12.5, 'home_advantage': 50, 'season_carryover': 0.5}
 # Official injury reports: players listed Out on the last report before tip-off (falls back
 # to "missed the previous game" when no report covers the game). See RESULTS.md, Phase 2.
 INJURY_PARAMS = {"use_reports": True}
+# Player-based team strength from rosters, box scores and injury reports (player_strength.py).
+# Shipped 2026-10-21 on the 2025-26 held-out games (log loss -0.0048, SE 0.0021, 4/4 folds);
+# the planned 2026-27-only test (experiments.py player_strength) still runs at 200 games.
+PLAYER_STRENGTH = True
 
 
 def load_games(data_dir='data', first_season_id=None):
@@ -40,7 +46,7 @@ def load_injury_reports():
 
 
 def build_dataset(raw_game_df, player_boxscores, elo_params=None,
-                  injury_params=None, reports=None, verbose=True, darko=None):
+                  injury_params=None, reports=None, verbose=True, darko=None, player_strength=None):
     """
     Returns (matchup training set, feature processor, Elo calculator).
     Every feature for a game uses only games before it.
@@ -48,6 +54,7 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     log = print if verbose else (lambda *a, **k: None)
     elo_params = ELO_PARAMS if elo_params is None else elo_params
     injury_params = INJURY_PARAMS if injury_params is None else injury_params
+    player_strength = PLAYER_STRENGTH if player_strength is None else player_strength
 
     # Elo ratings (pre-game for features, post-game for live predictions)
     log("Calculating Elo...")
@@ -58,6 +65,12 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     injury_model = InjuryModel(player_boxscores, raw_game_df,
                                reports=reports, darko=darko, **injury_params)
     df_with_injuries = injury_model.backfill(df_with_elo, verbose=verbose)
+    if player_strength:     # PLAYER_STRENGTH_DIFF (player_strength.py)
+        from player_strength import PlayerStrength
+        from rosters import Rosters
+        log("Backfilling player-based team strength...")
+        df_with_injuries = PlayerStrength(player_boxscores, raw_game_df, injury_model,
+                                          rosters=Rosters()).backfill(df_with_injuries)
 
     # Team stats, rest, and rolling form
     log("Engineering features...")
@@ -72,6 +85,14 @@ def build_dataset(raw_game_df, player_boxscores, elo_params=None,
     # Merged after get_final_data so missing values here never remove rows from the base set.
     context = add_context(raw_game_df)[['GAME_ID', 'TEAM_ID'] + CONTEXT_COLUMNS]
     processed_df = processed_df.merge(context, on=['GAME_ID', 'TEAM_ID'], how='left')
+
+    # Opponent-adjusted power rating going into each game (power_rating.py), fitted on earlier
+    # games only; RATING_DIFF is home minus away.
+    log("Fitting pre-game power ratings...")
+    ratings = pregame_ratings(pair_games(raw_game_df), **POWER_RATING_PARAMS)
+    is_home = processed_df['MATCHUP'].str.contains('vs.', regex=False)
+    processed_df['POWER_RATING'] = np.where(is_home, processed_df['GAME_ID'].map(ratings['RATING_HOME']),
+                                            processed_df['GAME_ID'].map(ratings['RATING_AWAY']))
 
     # One row per game with home-minus-away differentials. Neutral-site (bubble) games still
     # feed Elo and rolling stats, but are not training rows: "home" meant nothing there.
