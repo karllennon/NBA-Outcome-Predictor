@@ -597,3 +597,27 @@ matched to box scores by player id: offseason signings and trades count for thei
 players who left are dropped. Players on a roster with no NBA games get replacement value and no
 expected minutes. Every 2026-27 game the experiment scores will have a pre-game snapshot. The
 dashboard's what-if list also keeps only players on the team's current roster.
+
+
+### Roster-aware power rating (not kept)
+
+Prompted by Toronto at Washington on 2026-10-23: Washington's offseason added Anthony Davis,
+Deandre Ayton and Khris Middleton, yet the power rating still mostly reflected last season's
+games by a much weaker roster, and it was the model's largest input for that game. The variant pulls each team's rating
+toward a prior from its current full-strength player strength (`power_rating.roster_priors`,
+scaled to rating points by a slope fit on earlier games) instead of toward the league average;
+the prior dominates when a team has few recent games and fades as results accumulate. Tested
+on the start of the 2024-25 season, which is training data rather than the overused held-out
+games, with the prior scale (1.54 points per strength unit) and the model fit only on earlier
+games. `python src/experiments.py roster_prior`:
+
+| Window | Games | Rating MSE change (SE) | Log loss shipped | With prior | Change (SE) |
+|---|---|---|---|---|---|
+| 2024-10-22 to 11-30 | 292 | +1.9 (2.0) | 0.6163 | 0.6184 | +0.0022 (0.0019) |
+| 2024-12-01 to 2025-01-28 | 391 | -2.3 (1.4) | 0.5948 | 0.5955 | +0.0007 (0.0010) |
+
+Not kept: slightly worse in the early season it was meant to help. The test is weak in one
+respect: there are no roster snapshots for 2024, so player strength learned of an offseason move
+only once the player had appeared for his new team, which is the case this was built for. It will
+be re-tested on 2026-27 games, which all have pre-game roster snapshots, at the 2026-11-15
+review. The option stays in `pregame_ratings` / `ratings_as_of` (`priors`), off by default.

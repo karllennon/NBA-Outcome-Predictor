@@ -49,11 +49,20 @@ def pair_games(team_games):
     return out[cols]
 
 
-def pregame_ratings(games, half_life, lam, target='MARGIN', cap=None):
+def _prior_vector(prior, teams):
+    """Penalty target for each team rating (0 = league average) from a {TEAM_ID: points} dict."""
+    prior = prior or {}
+    return np.array([float(prior.get(t, 0.0)) for t in teams] + [0.0])
+
+
+def pregame_ratings(games, half_life, lam, target='MARGIN', cap=None, priors=None):
     """
     For every game, the ratings fitted on games before its date. Returns a DataFrame indexed by
     GAME_ID: RATING_HOME, RATING_AWAY, HCA (fitted home-court points) and PRED_MARGIN.
     target / cap (experiments): fit on another margin column, or on margins clipped to +-cap.
+    priors: optional {game day: {TEAM_ID: points}}; the penalty then pulls each team toward its
+    prior for that day instead of toward 0 (see roster_priors). With few recent games the prior
+    dominates; as games accumulate the results take over.
     """
     teams = np.sort(pd.unique(games[['HOME_ID', 'AWAY_ID']].values.ravel()))
     idx = {t: i for i, t in enumerate(teams)}
@@ -66,7 +75,8 @@ def pregame_ratings(games, half_life, lam, target='MARGIN', cap=None):
             decay = 0.5 ** ((day - last).days / half_life)
             A *= decay
             b *= decay
-        theta = np.linalg.solve(A + penalty + 1e-9 * np.eye(k), b)
+        mu = _prior_vector((priors or {}).get(day), teams)
+        theta = np.linalg.solve(A + penalty + 1e-9 * np.eye(k), b + penalty @ mu)
         h, a = g['HOME_ID'].map(idx).values, g['AWAY_ID'].map(idx).values
         hca = np.where(g['NEUTRAL'].values, 0.0, theta[-1])
         rows.append(pd.DataFrame({'GAME_ID': g['GAME_ID'].values, 'RATING_HOME': theta[h],
@@ -83,10 +93,11 @@ def pregame_ratings(games, half_life, lam, target='MARGIN', cap=None):
     return pd.concat(rows, ignore_index=True).set_index('GAME_ID')
 
 
-def ratings_as_of(games, as_of, half_life, lam):
+def ratings_as_of(games, as_of, half_life, lam, prior=None):
     """
     ({TEAM_ID: rating}, home court) fitted on games before `as_of`'s date: the same fit
     pregame_ratings uses for games on that date, computed directly (for live predictions).
+    prior: {TEAM_ID: points} for that day, as in pregame_ratings.
     """
     as_of = pd.Timestamp(as_of).normalize()
     teams = np.sort(pd.unique(games[['HOME_ID', 'AWAY_ID']].values.ravel()))
@@ -102,8 +113,36 @@ def ratings_as_of(games, as_of, half_life, lam):
     A = X.T @ (w[:, None] * X)
     b = X.T @ (w * past['MARGIN'].values)
     penalty = np.diag([lam] * len(teams) + [0.0])
-    theta = np.linalg.solve(A + penalty + 1e-9 * np.eye(k), b)
+    theta = np.linalg.solve(A + penalty + 1e-9 * np.eye(k), b + penalty @ _prior_vector(prior, teams))
     return dict(zip(teams, theta[:-1])), float(theta[-1])
+
+
+def roster_priors(strength, team_games, days, scale):
+    """
+    {day: {TEAM_ID: points}}: each team's full-strength player strength (player_strength.py, the
+    roster that day, nobody out) minus that day's league mean, times `scale` (rating points per
+    unit of strength). Injuries are left out: they enter the model through their own features.
+    """
+    names = team_games.drop_duplicates('TEAM_ID').set_index('TEAM_ID')['TEAM_NAME']
+    out = {}
+    for day in days:
+        s = {tid: strength.team_strength(name, day, out=[])[0] for tid, name in names.items()}
+        mean = np.mean(list(s.values()))
+        out[pd.Timestamp(day)] = {tid: scale * (v - mean) for tid, v in s.items()}
+    return out
+
+
+def fit_prior_scale(strength, games, team_games, before):
+    """
+    Rating points per unit of player strength: least-squares slope of home margin on the
+    full-strength strength difference (with home court), on games before `before` only.
+    """
+    names = team_games.drop_duplicates('TEAM_ID').set_index('TEAM_ID')['TEAM_NAME']
+    g = games[games['GAME_DATE'] < pd.Timestamp(before)]
+    diff = np.array([strength.team_strength(names[r.HOME_ID], r.GAME_DATE, out=[])[0]
+                     - strength.team_strength(names[r.AWAY_ID], r.GAME_DATE, out=[])[0] for r in g.itertuples()])
+    X = np.column_stack([np.ones(len(diff)), diff])
+    return float(np.linalg.lstsq(X, g['MARGIN'].values, rcond=None)[0][1])
 
 
 def rating_tables(games, half_lives=HALF_LIVES, lambdas=LAMBDAS):
