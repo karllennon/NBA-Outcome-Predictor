@@ -423,6 +423,58 @@ def player_strength(min_test_games=200):
 
 
 @experiment
+def roster_prior(start='2024-10-22', mid='2024-12-01', end='2025-01-29'):
+    """
+    Roster-aware power rating: the ridge penalty pulls each team toward a prior from its
+    full-strength player strength (power_rating.roster_priors) instead of toward 0. Scored on the
+    start of the 2024-25 season (training data, not the overused held-out games): the rating's
+    own margin error and the model's log loss, with the prior scale and the model fit only on
+    earlier games. Not kept (RESULTS.md).
+    """
+    import power_rating as PR
+    from data_pipeline import INJURY_PARAMS
+    from injuries import InjuryModel
+    from player_strength import PlayerStrength
+    from rosters import Rosters
+    start, mid, end = pd.Timestamp(start), pd.Timestamp(mid), pd.Timestamp(end)
+    games, players = raw()
+    strength = PlayerStrength(players, games, InjuryModel(players, games, reports=load_injury_reports(),
+                                                         **INJURY_PARAMS), rosters=Rosters())
+    pairs = PR.pair_games(games)
+    scale = PR.fit_prior_scale(strength, pairs, games, start)
+    print(f"Prior scale (games before {start.date()}): {scale:.3f} rating points per strength unit")
+    days = sorted(pairs.loc[pairs['GAME_DATE'] < end, 'GAME_DATE'].unique())
+    priors = PR.roster_priors(strength, games, days, scale)
+    base = PR.pregame_ratings(pairs, **PR.PARAMS)
+    prior = PR.pregame_ratings(pairs, **PR.PARAMS, priors=priors)
+    g = pairs.set_index('GAME_ID')
+    df = shipped_dataset()
+    diff = prior['RATING_HOME'] - prior['RATING_AWAY']
+
+    def ll(y, p):
+        p = np.clip(p, 1e-6, 1 - 1e-6)
+        return -(y * np.log(p) + (1 - y) * np.log(1 - p))
+    rows = []
+    for label, lo, hi in (('early season', start, mid), ('later', mid, end)):
+        ids = g.index[(g['GAME_DATE'] >= lo) & (g['GAME_DATE'] < hi)]
+        mse = ((prior.loc[ids, 'PRED_MARGIN'] - g.loc[ids, 'MARGIN']) ** 2
+               - (base.loc[ids, 'PRED_MARGIN'] - g.loc[ids, 'MARGIN']) ** 2)
+        train, test = df[df['GAME_DATE'] < lo], df[(df['GAME_DATE'] >= lo) & (df['GAME_DATE'] < hi)]
+        p0 = make_logistic().fit(train[FEATURES], train['TARGET']).predict_proba(test[FEATURES])[:, 1]
+        tr, te = train.assign(RATING_DIFF=train['GAME_ID'].map(diff)), test.assign(RATING_DIFF=test['GAME_ID'].map(diff))
+        p1 = make_logistic().fit(tr[FEATURES], tr['TARGET']).predict_proba(te[FEATURES])[:, 1]
+        d = ll(test['TARGET'].values, p1) - ll(test['TARGET'].values, p0)
+        rows.append({'window': f'{label} ({lo.date()} to {hi.date()})', 'games': len(test),
+                     'rating MSE change': mse.mean(), 'MSE SE': mse.std(ddof=1) / np.sqrt(len(mse)),
+                     'log loss shipped': ll(test['TARGET'].values, p0).mean(),
+                     'log loss prior': ll(test['TARGET'].values, p1).mean(),
+                     'log loss change': d.mean(), 'SE': d.std(ddof=1) / np.sqrt(len(d))})
+    out = pd.DataFrame(rows)
+    print(out.to_string(index=False, float_format=lambda v: f'{v:.4f}'))
+    return out
+
+
+@experiment
 def margin_regression():
     base = shipped_dataset()
     margin = margin_model()
