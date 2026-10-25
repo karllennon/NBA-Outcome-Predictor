@@ -185,11 +185,10 @@ def dd_result_text(g):
 def probability_card(g):
     p, m = g['MODEL_HOME_PROB'], g.get('MARKET_HOME_PROB')
     has_m = m is not None and not pd.isna(m)
-    fav = g['HOME_ABBR'] if p >= 0.5 else g['AWAY_ABBR']
     split = (f'<div class="cv-split"><div style="width:{(1 - p) * 100:.1f}%;background:{ui.AWAY_SIDE}"></div>'
              f'<div style="width:{p * 100:.1f}%;background:{ui.HOME_SIDE}"></div></div>'
              f'<div style="display:flex;justify-content:space-between" class="cv-small">'
-             f'<span>{ui.esc(g["AWAY_ABBR"])} {ui.pct(1 - p)}</span><span>{ui.esc(g["HOME_ABBR"])} {ui.pct(p)}</span></div>')
+             f'<span>{ui.esc(g["AWAY_ABBR"])} {ui.win_pct(1 - p)}</span><span>{ui.esc(g["HOME_ABBR"])} {ui.win_pct(p)}</span></div>')
     gap = '' if not has_m else f'{(p - m) * 100:+.1f}'
     cells = f"""
     <div class="cv-prob-grid">
@@ -217,7 +216,8 @@ def probability_card(g):
         if g.get('TOSS_UP'):
             cells += ('<div class="cv-small" style="margin-top:8px">⚠ The win probability and the spread pick '
                       'different favorites: this game is close to a toss-up.</div>')
-    sub = f"Model favors {fav}"
+    team, chance = ui.pick(g['HOME_ABBR'], g['AWAY_ABBR'], p)
+    sub = f"Model pick: {team} ({ui.win_pct(chance)})"
     if g.get('HOME_WIN') is not None:
         winner = g['HOME_ABBR'] if g['HOME_WIN'] else g['AWAY_ABBR']
         right = (p >= 0.5) == bool(g['HOME_WIN'])
@@ -334,7 +334,7 @@ def markets_card(games_today, selected_id, mode):
             result = f'<td>{ui.pill("✓ RIGHT" if right else "✗ WRONG", "good" if right else "crit")}</td>'
         rows.append(
             f'<tr{cls}><td class="cv-game">{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> {ui.badge(g["HOME_ABBR"], "sm")}</td>'
-            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.pct(p)}</td>'
+            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.win_pct(p)}</td>'
             f'<td class="num" style="color:#f19a75;font-weight:700">{ui.pct(m) if has_m else "n/a"}</td>'
             f'<td>{gap_pill(p, m)}</td>'
             f'<td class="cv-small" style="white-space:nowrap">{ui.esc(g.get("SPREAD_TEXT") or "–")}'
@@ -383,7 +383,7 @@ def upcoming_card(mode, current_date, all_dates):
         games_next = replay_view(str(nxt.date()))
         rows = ''.join(
             f'<tr><td class="cv-game">{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> {ui.badge(g["HOME_ABBR"], "sm")}</td>'
-            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.pct(g["MODEL_HOME_PROB"])}</td></tr>'
+            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.win_pct(g["MODEL_HOME_PROB"])}</td></tr>'
             for g in games_next[:6])
         ui.html_block(ui.card('Next game day', f'<table class="cv-table">{rows}</table>', sub=f'{nxt:%a %b %d}'))
         return
@@ -534,7 +534,7 @@ def page_dashboard():
                     detail = f"{g['AWAY_PTS']}–{g['HOME_PTS']}"
                 else:
                     detail = fmt_tip(g.get('TIP_TIME_ET')) or g.get('STATUS', '')
-                label = f"{g['AWAY_ABBR']} @ {g['HOME_ABBR']} · {detail} · {ui.pct(g['MODEL_HOME_PROB'])}"
+                label = f"{g['AWAY_ABBR']} @ {g['HOME_ABBR']} · {detail} · {ui.win_pct(g['MODEL_HOME_PROB'])}"
                 if st.button(label, key=f"game-{g['GAME_ID']}",
                              type='primary' if g['GAME_ID'] == st.session_state['game'] else 'secondary'):
                     st.session_state['game'] = g['GAME_ID']
