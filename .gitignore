@@ -9,6 +9,7 @@ data/team_game_features.csv
 
 # Model file
 models/nba_model.joblib
+models/spread_model.joblib
 
 # Python
 venv/
@@ -32,3 +33,6 @@ data/test_spread_predictions.csv
 data/spread_metrics.csv
 data/spread_disagreement.csv
 data/market_report.md
+
+# Claude Code: personal settings stay local (launch.json is shared)
+.claude/settings.local.json

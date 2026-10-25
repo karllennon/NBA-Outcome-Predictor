@@ -185,11 +185,10 @@ def dd_result_text(g):
 def probability_card(g):
     p, m = g['MODEL_HOME_PROB'], g.get('MARKET_HOME_PROB')
     has_m = m is not None and not pd.isna(m)
-    fav = g['HOME_ABBR'] if p >= 0.5 else g['AWAY_ABBR']
     split = (f'<div class="cv-split"><div style="width:{(1 - p) * 100:.1f}%;background:{ui.AWAY_SIDE}"></div>'
              f'<div style="width:{p * 100:.1f}%;background:{ui.HOME_SIDE}"></div></div>'
              f'<div style="display:flex;justify-content:space-between" class="cv-small">'
-             f'<span>{ui.esc(g["AWAY_ABBR"])} {ui.pct(1 - p)}</span><span>{ui.esc(g["HOME_ABBR"])} {ui.pct(p)}</span></div>')
+             f'<span>{ui.esc(g["AWAY_ABBR"])} {ui.win_pct(1 - p)}</span><span>{ui.esc(g["HOME_ABBR"])} {ui.win_pct(p)}</span></div>')
     gap = '' if not has_m else f'{(p - m) * 100:+.1f}'
     cells = f"""
     <div class="cv-prob-grid">
@@ -217,7 +216,8 @@ def probability_card(g):
         if g.get('TOSS_UP'):
             cells += ('<div class="cv-small" style="margin-top:8px">⚠ The win probability and the spread pick '
                       'different favorites: this game is close to a toss-up.</div>')
-    sub = f"Model favors {fav}"
+    team, chance = ui.pick(g['HOME_ABBR'], g['AWAY_ABBR'], p)
+    sub = f"Model pick: {team} ({ui.win_pct(chance)})"
     if g.get('HOME_WIN') is not None:
         winner = g['HOME_ABBR'] if g['HOME_WIN'] else g['AWAY_ABBR']
         right = (p >= 0.5) == bool(g['HOME_WIN'])
@@ -334,7 +334,7 @@ def markets_card(games_today, selected_id, mode):
             result = f'<td>{ui.pill("✓ RIGHT" if right else "✗ WRONG", "good" if right else "crit")}</td>'
         rows.append(
             f'<tr{cls}><td class="cv-game">{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> {ui.badge(g["HOME_ABBR"], "sm")}</td>'
-            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.pct(p)}</td>'
+            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.win_pct(p)}</td>'
             f'<td class="num" style="color:#f19a75;font-weight:700">{ui.pct(m) if has_m else "n/a"}</td>'
             f'<td>{gap_pill(p, m)}</td>'
             f'<td class="cv-small" style="white-space:nowrap">{ui.esc(g.get("SPREAD_TEXT") or "–")}'
@@ -352,10 +352,11 @@ def markets_card(games_today, selected_id, mode):
 def drivers_card(g):
     with st.container(key="card-drivers"):
         ui.card_title('What drives the model', f"toward {g['HOME_ABBR']} (right) or {g['AWAY_ABBR']} (left)")
-        if not g.get('FEATURES'):
+        c = dd.contributions(load_model(), g['FEATURES']) if g.get('FEATURES') else None
+        if c is None:
             ui.html_block('<div class="cv-muted">No feature row for this game.</div>')
             return
-        c = dd.contributions(load_model(), g['FEATURES']).head(7).iloc[::-1]
+        c = c.head(7).iloc[::-1]
         pts = c['contribution'] * 25  # slope of the logistic curve at 50%: approx. win-probability points
         colors = [ui.HOME_SIDE if v >= 0 else ui.AWAY_SIDE for v in pts]
         fig = go.Figure(go.Bar(
@@ -382,7 +383,7 @@ def upcoming_card(mode, current_date, all_dates):
         games_next = replay_view(str(nxt.date()))
         rows = ''.join(
             f'<tr><td class="cv-game">{ui.badge(g["AWAY_ABBR"], "sm")} <span class="cv-small">@</span> {ui.badge(g["HOME_ABBR"], "sm")}</td>'
-            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.pct(g["MODEL_HOME_PROB"])}</td></tr>'
+            f'<td class="num" style="color:#8fbcf3;font-weight:700">{ui.win_pct(g["MODEL_HOME_PROB"])}</td></tr>'
             for g in games_next[:6])
         ui.html_block(ui.card('Next game day', f'<table class="cv-table">{rows}</table>', sub=f'{nxt:%a %b %d}'))
         return
@@ -533,7 +534,7 @@ def page_dashboard():
                     detail = f"{g['AWAY_PTS']}–{g['HOME_PTS']}"
                 else:
                     detail = fmt_tip(g.get('TIP_TIME_ET')) or g.get('STATUS', '')
-                label = f"{g['AWAY_ABBR']} @ {g['HOME_ABBR']} · {detail} · {ui.pct(g['MODEL_HOME_PROB'])}"
+                label = f"{g['AWAY_ABBR']} @ {g['HOME_ABBR']} · {detail} · {ui.win_pct(g['MODEL_HOME_PROB'])}"
                 if st.button(label, key=f"game-{g['GAME_ID']}",
                              type='primary' if g['GAME_ID'] == st.session_state['game'] else 'secondary'):
                     st.session_state['game'] = g['GAME_ID']
@@ -656,6 +657,24 @@ def page_predictor():
                                    value=p['PLAYER_NAME'] in listed, key=f"{side}_out_{team}_{i}"):
                         outs[side].append(p['PLAYER_NAME'])
 
+    # What-if: players back from a long absence. The model drops anyone out 21+ games in a row
+    # (e.g. a season-long injury), so it cannot know they are back; this shows the difference.
+    back = {'home': [], 'away': []}
+    absent = {side: predictor.long_absent(team) for side, team in [('home', home), ('away', away)]}
+    if any(len(a) for a in absent.values()):
+        with st.expander('What if: players back from a long absence (not in the model)'):
+            st.caption("The model leaves out players who missed 21+ games in a row. Tick only players you "
+                       "know are back on the team and playing. The result is a what-if for reading only: "
+                       "it is not the model's prediction and is never logged.")
+            wcols = st.columns(2, gap='medium')
+            for side, team, col in [('home', home, wcols[0]), ('away', away, wcols[1])]:
+                with col:
+                    for i, p in enumerate(absent[side].to_dict('records')):
+                        if st.checkbox(f"{p['PLAYER_NAME']} ({p['impact_score']:.1f}) · missed "
+                                       f"{p['games_missed']} games, last played {p['last_game']:%b %d, %Y}",
+                                       key=f"{side}_back_{team}_{i}"):
+                            back[side].append(p['PLAYER_NAME'])
+
     if st.button('Predict', type='primary', use_container_width=True):
         r = predictor.predict(home, away, outs['home'], outs['away'])
         if r['stale_warning']:
@@ -665,6 +684,13 @@ def page_predictor():
              'HOME_ABBR': abbr.get(home, home[:3]), 'AWAY_ABBR': abbr.get(away, away[:3]),
              'FEATURES': r['features'].iloc[0].to_dict()}
         probability_card(g)
+        if back['home'] or back['away']:
+            w = predictor.what_if_returning(r, back['home'], back['away'], home_team=home, away_team=away)
+            names = ', '.join(back['home'] + back['away'])
+            margin = '' if w['home_margin'] is None else (
+                f"; {g['HOME_ABBR']} margin {r['home_margin']:+.1f} -> {w['home_margin']:+.1f}")
+            st.info(f"What-if with {names} back: {g['HOME_ABBR']} {r['home_prob']:.0%} -> {w['home_prob']:.0%}"
+                    f"{margin}. Not the model's prediction; not logged.")
         drivers_card(g)
 
 

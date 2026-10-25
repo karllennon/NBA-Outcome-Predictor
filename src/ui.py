@@ -184,6 +184,20 @@ def pct(p, digits=0):
     return '–' if p is None or p != p else f"{p * 100:.{digits}f}%"
 
 
+def win_pct(p):
+    """A team's win chance in whole percent, or with one decimal when whole percent would read
+    50% (49.5% to 50.5%), so the favorite is always visible: '50.4%', not '50%'."""
+    if p is None or p != p:
+        return '–'
+    return pct(p, 1) if round(p * 100) == 50 else pct(p)
+
+
+def pick(home, away, p_home):
+    """(team, its win chance): the model's pick, the team it gives more than 50%. Every game has
+    one; an exact 50% goes to the home team, as in the paper trades."""
+    return (home, p_home) if p_home >= 0.5 else (away, 1 - p_home)
+
+
 def plotly_layout(fig, height=260, legend=True, margin=None):
     """Recessive axes and grid, transparent background, ink-colored text."""
     fig.update_layout(
