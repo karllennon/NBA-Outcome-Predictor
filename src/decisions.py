@@ -155,6 +155,12 @@ def game_decisions(g, min_edge=MIN_EDGE_PTS):
     return out
 
 
+def win_chance(p):
+    """A win chance in whole percent, or with one decimal when whole percent would read 50%, so
+    the favorite is always visible (same rule as ui.win_pct)."""
+    return f"{p:.1%}" if round(p * 100) == 50 else f"{p:.0%}"
+
+
 def reason(g, d, market):
     """One plain-English line explaining a decision."""
     home, away = g['HOME_ABBR'], g['AWAY_ABBR']
@@ -172,5 +178,5 @@ def reason(g, d, market):
     if not d or d.get('mid') is None:
         return 'No usable Kalshi moneyline price.'
     team = d['team']
-    return (f"Model: {team} {d['p_side']:.0%} to win. Price: {d['mid'] * 100:.0f}¢, "
-            f"so you'd pay {d['mid'] * 100:.0f}¢ for a {d['p_side']:.0%} chance ({d['edge_pts']:+.1f} pts after fees).")
+    return (f"Model: {team} {win_chance(d['p_side'])} to win. Price: {d['mid'] * 100:.0f}¢, "
+            f"so you'd pay {d['mid'] * 100:.0f}¢ for a {win_chance(d['p_side'])} chance ({d['edge_pts']:+.1f} pts after fees).")

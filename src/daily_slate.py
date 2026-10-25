@@ -205,8 +205,10 @@ def print_slate(slate):
         market = '   n/a' if pd.isna(r.MARKET_HOME_PROB) else f"{r.MARKET_HOME_PROB:6.1%}"
         gap = '' if pd.isna(r.GAP) else f"{r.GAP * 100:+5.1f} pts" + ('  <-- gap >= 5' if abs(r.GAP) >= GAP_HIGHLIGHT else '')
         tip = '' if pd.isna(r.TIP_TIME_ET) else f"{pd.Timestamp(r.TIP_TIME_ET):%I:%M %p}"
+        pick = r.HOME_TEAM if r.MODEL_HOME_PROB >= 0.5 else r.AWAY_TEAM
         print(f"{tip:>8}  {r.AWAY_TEAM:>24} @ {r.HOME_TEAM:<24} model {r.MODEL_HOME_PROB:6.1%}  "
               f"market {market}  {gap}")
+        print(f"{'':>10}pick: {pick} ({max(r.MODEL_HOME_PROB, 1 - r.MODEL_HOME_PROB):.1%})")
         if r.SPREAD_TEXT:
             print(f"{'':>10}spread: model {r.SPREAD_TEXT:<10} market {r.MARKET_SPREAD_TEXT or 'n/a'}"
                   + ("   (win probability and spread disagree: close to a toss-up)" if r.TOSS_UP else ''))
